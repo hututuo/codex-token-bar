@@ -36,6 +36,13 @@ on:
         description: 'Only collect candidate allocation stacks; never a performance comparison'
         type: boolean
         default: false
+      allocation_selection_profile:
+        description: 'Allocation candidate sampling only; heap labels never prove ownership'
+        type: choice
+        options:
+          - data-string-float-v1
+          - exact-64k-spread-v1
+        default: data-string-float-v1
 
 permissions:
   contents: read
@@ -199,6 +206,7 @@ jobs:
     timeout-minutes: 45
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SELECTION_PROFILE: ${{ inputs.allocation_selection_profile || 'data-string-float-v1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,6 +240,7 @@ jobs:
           record = {
             'purpose':'allocation-diagnostic', 'performanceComparable':False,
             'performanceVerdict':'NOT_EVALUATED', 'productSourceSha':os.environ['SOURCE_SHA'],
+            'selectionProfile':os.environ['SELECTION_PROFILE'],
             'actualProductHead':head('candidate'), 'harnessSha':os.environ['GITHUB_SHA'],
             'actualHarnessHead':head('harness'), 'runId':os.environ['GITHUB_RUN_ID'],
             'runAttempt':os.environ['GITHUB_RUN_ATTEMPT'], 'buildConfiguration':'release',
@@ -276,6 +285,7 @@ jobs:
           set -euo pipefail
           python3 harness/scripts/cloud/whole_app_allocations.py \
             --candidate-app "$GITHUB_WORKSPACE/candidate-allocation.app" \
+            --selection-profile "$SELECTION_PROFILE" \
             --output-dir "$GITHUB_WORKSPACE/allocation-evidence"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

@@ -72,15 +72,23 @@
 
 该候选已推送为 `1d59f34b1851b806d7cb3fbf9aaf0ce08790e4bb`，远端完整 SHA 已读回复核。完整 CI `46074134352`、公开 0.9.7 升级 `46074134405` 及资源配对 `46074193555` 均绑定该源；资源 run 的产品和 harness 都为该 SHA，输入保持原 baseline、静态来源与采样协议。dispatch 请求及 run 绑定保存在 `/tmp/tokenbar-dispatch-1d59f34b-resource.json`。各运行由独立审计者跟进；尚未将旧 C 的通过结果改记为本 SHA。
 
+其中公开升级 `46074134405` 已完成并独立审计通过：142 项选定测试实际 passed、0 failed、0 skipped/ignored，29 个 workflow steps 全部成功。两份 ZIP 与 API SHA-256/大小相符，26 份 fixture receipt 的 104 个哈希及 32 条 immutableFiles 全部匹配；Windows 四个 production recovery 阶段、19 个 manifest 场景/23 份报告、最终 A/B SQL、完整初次导出与公开原库的 typed rows/schema 均核对，862 个原始文件字节保全。证据在 `/tmp/tokenbar-public097-run-46074134405/AUDIT.md`。macOS 没有上传最终临时 A/B 库，最终 SQL 独立核对仅适用于 Windows；未保留单独的恢复前 WAL 字节快照。该结果不代替全量 CI、资源或安装验收。
+
 ## 原始页存储的后续候选
 
 新分配栈将一个 98,304 B 的 Data 分配定位到 C 的 `rawRead` 页读取入口。后续候选将 `Data(count:)` 后再写入，改为 `malloc(count)` 的独立未初始化存储，原 `Darwin.pread` 循环读满后通过 `Data(bytesNoCopy:count:deallocator:.free)` 转交所有权；任意读取错误在返回前释放裸存储。EINTR 重试、提前 EOF 的 EAGAIN、最后 stamp 校验、缓存预算与所有 probe/cap 语义保留；malloc 失败现在抛出 ENOMEM。缓存中的页保持不可变。两个独立静态审查未发现阻断，原生生命周期与字节回归仍待云端。
 
 新增两项公共 API 回归，覆盖热缓存上的 64 KiB 物理 probe、73 字节尾页、4 MiB cap、EOF 不读取、独立 descriptor offset、返回 Data 副本修改、另一 inode 的页/owner 逐出，以及重热后同 inode 同长度覆盖时旧快照保全。原先十项及新增两项均列入标准 Swift CI 的必执行清单。本地仍只运行轻量 execution-gate/workflow/YAML/bash/diff 检查，尚无本候选原生执行证据。
 
+该产品候选已推送为 `750449be49627722a86e2ce9b21c9f9cac55997b`。完整 CI `46075158971`、公开 0.9.7 升级 `46075158856`、资源配对 `46075190349` 分别绑定该完整 SHA；资源 dispatch receipt 为 `/tmp/tokenbar-dispatch-750449be-resource.json`，已经与 runId 及 head SHA 绑定。整 App baseline 仍为 `f9e917917df07a24a800bf63d00700d0028bcb28`，aggregate baseline 仍为 `3eadadc66168802643ef595712c739877083559e`。这些运行尚待完成后的原始产物独立审计；产品与先前候选的结果分别记录。
+
 这里请求的分配尺寸等于逻辑读取尺寸，不代表 malloc 的物理尺寸无取整，也不保证 Foundation 永不复制。没有通过 `withUnsafeBytes` 指针调用 `malloc_size` 写永久断言：该 API 提供连续视图，不是通用的 malloc 所有者起点合同。实际分配大小、后续 Data mutation 的复制成本与整 App 收益仍须精确 SHA 云端诊断和非插桩配对，不能由删除预填充或预留代码直接推算。
 
 现有四地址诊断优先选最大 Data 与另一块 98,304 B Data；若后续页变为 64 KiB 或被 heap 标成一般 malloc，可能不再入选。因此“不再选到旧栈”本身不构成分配改善证据。SourceSeconds 的稀疏页可行性也已复核：实际共有 13 种 source，本份 20 文件 fixture 仅有 Claude Code 一种，Float 元素载荷为 360,000 B；20 个会话不等于 20 个 source。本批没有改其 Float32 舍入、subset cache 或存储表示。
+
+后续 harness 增加可选 `exact-64k-spread-v1` 抽样，默认仍为 `data-string-float-v1`。新 profile 从捕获输出中的完整正地址记录去重，仅取恰好 65,536 B 的候选，按数值地址排序，在至多四个均匀 rank（含端点）采栈；没有其它尺寸补位，也不按 MeCab、Data、malloc 等推测标签筛选。元数据保留原始 label、候选池条数、零基 rank、profile 和缺失角色，request、summary 与 collector 记录同一 profile。地址分布可能与 allocator zone/owner 聚集相关，四个 rank 既不是随机样本也不能保证命中页存储；heap 超时或截断时，池与 rank 只描述保留的完整前缀。只有实际栈映射到精确产品的 `rawRead` 分配行，才形成该采样地址的分配站点证据。四地址、时间/字节上限、PARTIAL 与非性能资格保持原合同；新 profile 尚无云端采集结果。
+
+两份 stdlib harness 测试现为 76 项，本地全部通过；其中 allocation 模块 45 项，覆盖 0/1/2/3/4/5/10 个候选的固定 rank、数值排序、重复/不完整/零地址、保留推测 label、无异尺寸补位、截断 PARTIAL、预先退出、CLI 拒绝未知 profile，以及 CLI→callback→summary 的 profile 和非性能资格。YAML、全部 run shell block 的 `bash -n` 及 diff 检查通过。没有为这些轻量检查执行本地产品构建或启动 App。
 
 ## 精确 3256e3f0 云端结果（2026-11-28）
 

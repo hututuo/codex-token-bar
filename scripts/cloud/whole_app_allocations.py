@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from functools import partial
 import os
 from pathlib import Path
 import platform
@@ -32,6 +33,22 @@ SELECTION_PROFILE = "data-string-float-v1"
 SELECTION_ROLES = ("data-largest", "data-exact-98304", "string-array-largest", "float-array-largest")
 SELECTION_STRATEGY = ("largest Data, another exact 98304-byte Data, largest String array, largest Float array; "
                       "fill missing roles from remaining largest blocks")
+EXACT_64K_PROFILE = "exact-64k-spread-v1"
+SELECTION_PROFILES = {
+    SELECTION_PROFILE: (SELECTION_ROLES, SELECTION_STRATEGY),
+    EXACT_64K_PROFILE: (
+        tuple(f"exact-64k-spread-{index}" for index in range(1, MAX_ADDRESSES + 1)),
+        "exact 65536-byte candidates sorted by numeric address; up to four evenly spread ranks "
+        "including endpoints, without heap-label filtering or other-size fallback; "
+        "ranks describe only complete records in the captured heap output, not ownership or statistical coverage",
+    ),
+}
+
+
+def selection_configuration(profile):
+    if profile not in SELECTION_PROFILES:
+        raise ValueError(f"unknown allocation selection profile: {profile}")
+    return SELECTION_PROFILES[profile]
 
 
 def complete_lines(text):
@@ -50,13 +67,22 @@ def parse_heap_addresses(text, limit=MAX_ADDRESSES):
     return sorted(found.values(), key=lambda row: (-row["heapAllocatedBytes"], row["address"]))[:max(0, min(limit, MAX_ADDRESSES))]
 
 
-def select_heap_addresses(text):
-    """Sample unassigned Data and array families, without treating type names as owners."""
+def select_heap_addresses(text, profile=SELECTION_PROFILE):
+    """Sample complete records under an explicit profile; labels do not prove owners."""
+    roles, _ = selection_configuration(profile)
     # Reuse strict parsing, but collect each line so selection sees more than four.
     rows = {}
     for line in complete_lines(text):
         for row in parse_heap_addresses(line + "\n", limit=1):
             rows.setdefault(row["address"], row)
+    if profile == EXACT_64K_PROFILE:
+        pool = sorted((row for row in rows.values() if row["heapAllocatedBytes"] == 65536),
+                      key=lambda row: int(row["address"], 16))
+        count = min(MAX_ADDRESSES, len(pool))
+        ranks = ([index * (len(pool) - 1) // (count - 1) for index in range(count)]
+                 if count > 1 else [0] if count else [])
+        return [dict(pool[rank], selectionRole=roles[index], selectionPoolCount=len(pool),
+                     selectionPoolRank=rank) for index, rank in enumerate(ranks)]
     ordered = sorted(rows.values(), key=lambda row: (-row["heapAllocatedBytes"], row["address"]))
     selected, seen = [], set()
     targets = (("data-largest", "__DataStorage._bytes (malloc)", None),
@@ -167,14 +193,16 @@ def bounded_capture(argv, env, destination, timeout, max_bytes):
     return result
 
 
-def collect_allocations(process, destination, env):
+def collect_allocations(process, destination, env, profile=SELECTION_PROFILE):
     """Inspect selected live blocks after sampling; selection is not ownership proof."""
+    roles, strategy = selection_configuration(profile)
     started = time.monotonic_ns()
     deadline = time.monotonic() + COLLECTION_SECONDS
     result = {"purpose": PURPOSE, "outsideMeasurement": True, "startedMonotonicNS": started,
               "status": "UNAVAILABLE", "tools": [], "allocations": [],
               "selectionPattern": HEAP_PATTERN, "maxAddresses": MAX_ADDRESSES,
-              "selectionProfile": SELECTION_PROFILE, "selectionStrategy": SELECTION_STRATEGY,
+              "selectionProfile": profile, "selectionStrategy": strategy,
+              "missingSelectionRoles": list(roles),
               "selectedLiveAddressesOnly": True,
               "limits": {"seconds": COLLECTION_SECONDS, "heapBytes": HEAP_BYTES,
                          "heapSeconds": HEAP_SECONDS,
@@ -194,9 +222,9 @@ def collect_allocations(process, destination, env):
         heap["tool"] = "heap"
         result["tools"].append(heap)
         bench.write_json(destination / "allocation-diagnostics.json", result)
-        addresses = select_heap_addresses(heap_path.read_text(errors="replace")) if (
+        addresses = select_heap_addresses(heap_path.read_text(errors="replace"), profile=profile) if (
             heap["returnCode"] == 0 or heap["truncated"] or heap["timedOut"]) else []
-        result["missingSelectionRoles"] = [role for role in SELECTION_ROLES if not any(
+        result["missingSelectionRoles"] = [role for role in roles if not any(
             row["selectionRole"] == role for row in addresses)]
         result["incompleteCoverage"] = heap["truncated"] or heap["timedOut"]
         selected_at = time.monotonic_ns()
@@ -237,6 +265,7 @@ def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-app", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--selection-profile", choices=tuple(SELECTION_PROFILES), default=SELECTION_PROFILE)
     args = parser.parse_args(argv)
     args.responses, args.trials = [20000], 1
     args.warmup, args.duration, args.startup_timeout, args.retained_graph = 120, 120, 300, False
@@ -247,6 +276,7 @@ def main(argv=None):
     args = parse_arguments(argv)
     output = args.output_dir.absolute()
     summary = {"schemaVersion": 1, "purpose": PURPOSE, "performanceComparable": False,
+               "selectionProfile": args.selection_profile,
                "performanceVerdict": "NOT_EVALUATED", "metricsEligibleForHalvingAcceptance": False,
                "instrumentation": {"MallocStackLogging": "1"}, "loggingEnabledAt": "process-start",
                "status": "NOT_RUN", "results": [], "staticFixture": True,
@@ -289,7 +319,7 @@ def main(argv=None):
         bench.require(dt.date.today() == local_day, "local day changed before diagnostic", "NOT_RUN")
         result = bench.run_trial("candidate", 1, app, runtime_app, home, fixture_root, fixture, env, args,
                                  output, windows, display, app_env=dict(env, MallocStackLogging="1"),
-                                 post_sample=collect_allocations, purpose=PURPOSE)
+                                 post_sample=partial(collect_allocations, profile=args.selection_profile), purpose=PURPOSE)
         summary["results"].append(result)
         bench.require(dt.date.today() == local_day, "local day changed during diagnostic", "NOT_RUN")
         summary["status"] = result["postMeasurementMemoryDiagnostics"]["status"]

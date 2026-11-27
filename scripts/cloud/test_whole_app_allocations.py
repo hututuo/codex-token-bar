@@ -1,5 +1,6 @@
 """Stdlib-only allocation diagnostics checks; never build or launch an App."""
 import ctypes
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -129,6 +130,66 @@ class AllocationParserTests(unittest.TestCase):
                 self.assertEqual(len({row["address"] for row in selected}), len(selected))
                 if label == "one exact Data address cannot fill two roles":
                     self.assertEqual(selected[0]["heapAllocatedBytes"], 98304)
+
+    def test_exact_64k_profile_spreads_across_the_entire_unique_pool(self):
+        cases = [(0, []), (1, [0]), (2, [0, 1]), (3, [0, 1, 2]),
+                 (4, [0, 1, 2, 3]), (5, [0, 1, 2, 4]), (10, [0, 3, 6, 9])]
+        for count, ranks in cases:
+            with self.subTest(pool_count=count):
+                candidates = [(hex(0x1000 + index * 16), f"observed-label-{index}")
+                              for index in range(count)]
+                text = "0x1: larger noncandidate (1048576 bytes)\n"
+                text += "".join(f"{address}: {label} (65536 bytes)\n"
+                                for address, label in reversed(candidates))
+                text += "0x2: smaller noncandidate (65535 bytes)\n0x3: larger noncandidate (65537 bytes)\n"
+                selected = alloc.select_heap_addresses(text, profile=alloc.EXACT_64K_PROFILE)
+                self.assertEqual([row["address"] for row in selected], [candidates[rank][0] for rank in ranks])
+                self.assertEqual([row["heapType"] for row in selected], [candidates[rank][1] for rank in ranks])
+                self.assertEqual([row["selectionRole"] for row in selected],
+                                 [f"exact-64k-spread-{index + 1}" for index in range(len(ranks))])
+                self.assertEqual([row["selectionPoolRank"] for row in selected], ranks)
+                self.assertEqual([row["selectionPoolCount"] for row in selected], [count] * len(ranks))
+                self.assertTrue(all(row["heapAllocatedBytes"] == 65536 for row in selected))
+                self.assertEqual(len({row["address"] for row in selected}), len(selected))
+                self.assertLessEqual(len(selected), 4)
+
+    def test_exact_64k_profile_sorts_numeric_addresses_without_filtering_labels(self):
+        rows = [("0x100", "malloc in MeCab::FreeList<mecab_node_t>::alloc()"),
+                ("0x20", "__DataStorage._bytes (malloc)"),
+                ("0x2", "Swift._DictionaryStorage<Swift.String, AgentSpeedCore.ResponseStorage>"),
+                ("0x11", "malloc"), ("0x10", "misleading SharedSourceIO/rawRead label")]
+        text = "".join(f"{address}: {label} (65536 bytes)\n" for address, label in rows)
+        selected = alloc.select_heap_addresses(text, profile=alloc.EXACT_64K_PROFILE)
+        self.assertEqual([row["address"] for row in selected], ["0x2", "0x10", "0x11", "0x100"])
+        self.assertEqual([row["selectionPoolRank"] for row in selected], [0, 1, 2, 4])
+        labels = dict(rows)
+        self.assertEqual([row["heapType"] for row in selected],
+                         [labels[address] for address in ("0x2", "0x10", "0x11", "0x100")])
+        for row in selected:
+            self.assertNotIn("owner", row)
+            self.assertNotIn("allocationSite", row)
+
+    def test_exact_64k_profile_uses_only_complete_positive_unique_address_records(self):
+        text = ("0x10: first observed label (65536 bytes)\n"
+                "0x010: duplicate label (65536 bytes)\n"
+                "0x10: conflicting duplicate size (98304 bytes)\n"
+                "0x0: zero address (65536 bytes)\n"
+                "0x2: malloc in MeCab::FreeList<mecab_node_t>::alloc() (65536 bytes)\n"
+                "0x20: third observed label (65536 bytes)\n"
+                "0x30: first noncandidate size (65535 bytes)\n"
+                "0x30: duplicate must not replace first record (65536 bytes)\n"
+                "0x40: zero bytes (0 bytes)\n"
+                "0x50: extra trailing text (65536 bytes) not a complete record\n"
+                "prefix 0x60: not an address record (65536 bytes)\n"
+                "0x70: incomplete final record (65536 bytes)")
+        selected = alloc.select_heap_addresses(text, profile=alloc.EXACT_64K_PROFILE)
+        self.assertEqual([row["address"] for row in selected], ["0x2", "0x10", "0x20"])
+        self.assertEqual([row["selectionPoolRank"] for row in selected], [0, 1, 2])
+        self.assertEqual([row["selectionPoolCount"] for row in selected], [3, 3, 3])
+        self.assertEqual(selected[1]["heapType"], "first observed label")
+        self.assertEqual(alloc.select_heap_addresses(
+            "0x1: malloc (98304 bytes)\n0x2: malloc (131072 bytes)\n",
+            profile=alloc.EXACT_64K_PROFILE), [])
 
     def test_history_keeps_group_counts_bytes_and_original_frames(self):
         first_frame = "    0 libswiftCore.dylib 0x1234 swift_allocObject + 8"
@@ -438,6 +499,92 @@ class AllocationCollectorTests(unittest.TestCase):
                 self.assert_selection_metadata(saved, missing_roles)
                 self.assertEqual([entry["selectionRole"] for entry in saved["allocations"]], expected_roles)
 
+    def test_exact_64k_collector_persists_profile_pool_ranks_and_missing_roles_under_original_budgets(self):
+        cases = [(0, []), (1, [0]), (2, [0, 1]), (3, [0, 1, 2]),
+                 (4, [0, 1, 2, 3]), (5, [0, 1, 2, 4]), (10, [0, 3, 6, 9])]
+        all_roles = [f"exact-64k-spread-{index}" for index in range(1, 5)]
+        history = ("1 call for 65536 bytes:\n" + self.FRAME).encode()
+        limits = {"seconds": 120, "heapBytes": 8 * 1024 * 1024, "heapSeconds": 60,
+                  "historyBytesPerAddress": 64 * 1024, "historySecondsPerAddress": 10}
+        for count, ranks in cases:
+            with self.subTest(pool_count=count):
+                heap = "0x1: noncandidate (1048576 bytes)\n"
+                heap += "".join(f"{hex(0x1000 + index * 16)}: observed-type-{index} (65536 bytes)\n"
+                                for index in reversed(range(count)))
+                captures, capture = self.capture_plan([{"payload": heap.encode()}]
+                                                     + [{"payload": history}] * len(ranks))
+                process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+                env = {"PATH": "/usr/bin:/bin", "ALLOCATION_TEST_VALUE": "synthetic"}
+                with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+                    evidence = alloc.collect_allocations(process, Path(tmp), env, profile=alloc.EXACT_64K_PROFILE)
+                    saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+                self.assertEqual(evidence["status"], "COLLECTED" if ranks else "UNAVAILABLE")
+                self.assertEqual(len(captures), 1 + len(ranks))
+                self.assertLessEqual(len(captures), 5)
+                for record in (evidence, saved):
+                    self.assertEqual(record["selectionProfile"], "exact-64k-spread-v1")
+                    self.assertEqual(record["missingSelectionRoles"], all_roles[len(ranks):])
+                    self.assertEqual(record["limits"], limits)
+                    self.assertEqual(record["maxAddresses"], 4)
+                    self.assertTrue(record["outsideMeasurement"])
+                    self.assertEqual([row["selectionPoolRank"] for row in record["allocations"]], ranks)
+                    self.assertEqual([row["selectionPoolCount"] for row in record["allocations"]],
+                                     [count] * len(ranks))
+                    self.assertEqual([row["selectionRole"] for row in record["allocations"]], all_roles[:len(ranks)])
+                    self.assertEqual([row["heapType"] for row in record["allocations"]],
+                                     [f"observed-type-{rank}" for rank in ranks])
+                self.assertEqual([row["argv"][-1] for row in captures[1:]],
+                                 [hex(0x1000 + rank * 16) for rank in ranks])
+                self.assertEqual(captures[0]["argv"],
+                                 ["/usr/bin/heap", "-s", "--noContent", "--addresses=" + alloc.HEAP_PATTERN, "4321"])
+                self.assertEqual(captures[0]["max_bytes"], limits["heapBytes"])
+                for captured in captures[1:]:
+                    self.assertEqual(captured["argv"][:4],
+                                     ["/usr/bin/malloc_history", "4321", "-allBySize", "-fullStacks"])
+                    self.assertEqual(captured["max_bytes"], limits["historyBytesPerAddress"])
+                    self.assertGreater(captured["timeout"], 0)
+                    self.assertLessEqual(captured["timeout"], limits["historySecondsPerAddress"])
+                self.assertTrue(all(captured["env"] is env for captured in captures))
+                self.assertLessEqual(sum(captured["timeout"] for captured in captures), limits["seconds"])
+
+    def test_exact_64k_collector_keeps_truncated_heap_pool_and_history_evidence_partial(self):
+        heap = (b"0x10: observed first label (65536 bytes)\n"
+                b"0x20: observed second label (65536 bytes)\n"
+                b"0x30: incomplete final record (65536 bytes)")
+        history = ("1 call for 65536 bytes:\n" + self.FRAME).encode()
+        captures, capture = self.capture_plan([
+            {"payload": heap, "truncated": True, "returnCode": -9},
+            {"payload": history, "truncated": True, "returnCode": -9},
+            {"payload": history},
+        ])
+        process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+            evidence = alloc.collect_allocations(process, Path(tmp), {}, profile=alloc.EXACT_64K_PROFILE)
+            saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+        for record in (evidence, saved):
+            self.assertEqual(record["status"], "PARTIAL")
+            self.assertTrue(record["incompleteCoverage"])
+            self.assertEqual(record["recordedStackAddresses"], 2)
+            self.assertEqual([row["selectionPoolCount"] for row in record["allocations"]], [2, 2])
+            self.assertEqual([row["selectionPoolRank"] for row in record["allocations"]], [0, 1])
+            self.assertEqual([row["status"] for row in record["allocations"]], ["COLLECTED", "COLLECTED"])
+            self.assertEqual(record["missingSelectionRoles"], ["exact-64k-spread-3", "exact-64k-spread-4"])
+        self.assertEqual([entry["argv"][-1] for entry in captures[1:]], ["0x10", "0x20"])
+
+    def test_exact_64k_profile_and_missing_roles_are_persisted_when_the_child_already_exited(self):
+        process = SimpleNamespace(pid=4321, poll=Mock(return_value=0))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture") as capture:
+            evidence = alloc.collect_allocations(process, Path(tmp), {}, profile=alloc.EXACT_64K_PROFILE)
+            saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+        for record in (evidence, saved):
+            self.assertEqual(record["selectionProfile"], "exact-64k-spread-v1")
+            self.assertEqual(record["status"], "UNAVAILABLE")
+            self.assertEqual(record["tools"], [])
+            self.assertEqual(record["allocations"], [])
+            self.assertEqual(record["missingSelectionRoles"],
+                             [f"exact-64k-spread-{index}" for index in range(1, 5)])
+        capture.assert_not_called()
+
     def test_heap_denial_never_qualifies_as_a_collected_stack(self):
         captures, capture = self.capture_plan([{"payload": b"permission denied\n", "returnCode": 1}])
         process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
@@ -626,9 +773,86 @@ class AllocationSafetyTests(unittest.TestCase):
     def test_cli_fixes_a_single_candidate_diagnostic_at_the_required_workload(self):
         args = alloc.parse_arguments(["--candidate-app", "/synthetic/candidate.app", "--output-dir", "/synthetic/evidence"])
         self.assertEqual(args.candidate_app, Path("/synthetic/candidate.app"))
+        self.assertEqual(args.selection_profile, "data-string-float-v1")
         self.assertEqual((args.responses, args.trials, args.warmup, args.duration), ([20000], 1, 120, 120))
         self.assertFalse(args.retained_graph)
         self.assertFalse(hasattr(args, "baseline_app"))
+
+    def test_cli_accepts_explicit_exact_64k_profile_without_changing_the_workload(self):
+        args = alloc.parse_arguments(["--candidate-app", "/synthetic/candidate.app", "--output-dir", "/synthetic/evidence",
+                                      "--selection-profile", "exact-64k-spread-v1"])
+        self.assertEqual(args.selection_profile, alloc.EXACT_64K_PROFILE)
+        self.assertEqual((args.responses, args.trials, args.warmup, args.duration), ([20000], 1, 120, 120))
+        self.assertFalse(args.retained_graph)
+
+    def test_cli_rejects_unknown_profiles_before_starting_any_process_or_native_framework(self):
+        with patch.object(subprocess, "Popen") as popen, patch.object(subprocess, "run") as run, \
+                patch.object(ctypes, "CDLL") as cdll, patch.object(sys, "stderr"):
+            with self.assertRaises(SystemExit) as raised:
+                alloc.main(["--candidate-app", "/missing/candidate.app", "--output-dir", "/synthetic/evidence",
+                            "--selection-profile", "not-a-profile"])
+        self.assertEqual(raised.exception.code, 2)
+        popen.assert_not_called()
+        run.assert_not_called()
+        cdll.assert_not_called()
+
+    def test_main_binds_requested_profile_into_the_callback_and_saved_summary(self):
+        for profile in ("data-string-float-v1", "exact-64k-spread-v1"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as tmp:
+                home, runner = Path(tmp) / "home", Path(tmp) / "runner"
+                home.mkdir()
+                runner.mkdir()
+                output = runner / "evidence"
+                process = SimpleNamespace(pid=4321)
+                environment = {"PATH": "/usr/bin:/bin", "ALLOCATION_TEST_VALUE": "synthetic"}
+                diagnostic = {"status": "COLLECTED", "selectionProfile": profile}
+                display = Mock(record={"synthetic": True})
+                noon = alloc.dt.datetime.combine(alloc.dt.date.today(), alloc.dt.time(12)).timestamp()
+                callback_arguments = (process, output / "synthetic-trial", environment)
+
+                def trial(*args, **kwargs):
+                    self.assertEqual(kwargs["app_env"], dict(environment, MallocStackLogging="1"))
+                    return {"postMeasurementMemoryDiagnostics": kwargs["post_sample"](*callback_arguments)}
+
+                with ExitStack() as stack:
+                    for replacement in (
+                            patch.object(alloc.bench, "guard_host", return_value=(home, runner)),
+                            patch.object(alloc.bench, "clean_environment", return_value=environment),
+                            patch.object(alloc.bench, "command", return_value=SimpleNamespace(returncode=0)),
+                            patch.object(alloc.bench, "bundle_manifest", return_value={"bundleID": "synthetic"}),
+                            patch.object(alloc.bench, "export_defaults", return_value=None),
+                            patch.object(alloc.bench, "product_processes", return_value=[]),
+                            patch.object(alloc.bench, "VisibleWindowProbe"),
+                            patch.object(alloc.bench, "BenchmarkDisplay", return_value=display),
+                            patch.object(alloc.bench, "generate_fixture", return_value={"synthetic": True}),
+                            patch.object(alloc.bench, "run_trial", side_effect=trial),
+                            patch.object(alloc.time, "time", return_value=noon),
+                            patch.object(alloc.platform, "platform", return_value="synthetic-macOS"),
+                            patch.object(alloc.platform, "machine", return_value="arm64"),
+                            patch.dict(os.environ, {}, clear=True), patch("builtins.print")):
+                        stack.enter_context(replacement)
+                    collector = stack.enter_context(patch.object(alloc, "collect_allocations", return_value=diagnostic))
+                    popen = stack.enter_context(patch.object(subprocess, "Popen"))
+                    run = stack.enter_context(patch.object(subprocess, "run"))
+                    cdll = stack.enter_context(patch.object(ctypes, "CDLL"))
+                    status = alloc.main(["--candidate-app", "/synthetic/candidate.app", "--output-dir", str(output),
+                                         "--selection-profile", profile])
+                self.assertEqual(status, 0)
+                collector.assert_called_once()
+                self.assertEqual(collector.call_args.args[:3], callback_arguments)
+                forwarded_profile = (collector.call_args.args[3] if len(collector.call_args.args) > 3
+                                     else collector.call_args.kwargs.get("profile"))
+                self.assertEqual(forwarded_profile, profile)
+                summary = json.loads((output / "summary.json").read_text())
+                self.assertEqual(summary["selectionProfile"], profile)
+                self.assertEqual(summary["results"][0]["postMeasurementMemoryDiagnostics"]["selectionProfile"], profile)
+                self.assertFalse(summary["performanceComparable"])
+                self.assertFalse(summary["metricsEligibleForHalvingAcceptance"])
+                self.assertEqual(summary["performanceVerdict"], "NOT_EVALUATED")
+                display.restore.assert_called_once()
+                popen.assert_not_called()
+                run.assert_not_called()
+                cdll.assert_not_called()
 
     def test_import_does_not_start_processes_or_load_native_frameworks(self):
         with patch.dict(sys.modules):
