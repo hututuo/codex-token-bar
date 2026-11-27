@@ -12,6 +12,10 @@
       "reason": "Token Bar anonymous large-record boundary regressions through FileTailer, ClaudeLineExtractor and ClaudeParser; verify cross-chunk and partial-append usage, successor records and replay without changing production limits.",
       "sha256": "1a7f8c2cdf0ea60e5e3646fa1ea90d8e3eac20971e80f63e956dc8df22231481"
     },
+    "macos/Tests/AgentSpeedCoreTests/DeduperAllocationTests.swift": {
+      "reason": "Regression coverage for deferred exact-key allocation, original FIFO ownership semantics, value-copy isolation and hashed deduper separation.",
+      "sha256": "afe4f3f3560ae1cc1ad658c81fadc28e4464b2e9cf7689c59d861fea0bd08917"
+    },
     "macos/Tests/AgentSpeedCoreTests/LineSplitterMemoryTests.swift": {
       "reason": "Verify bounded retained buffer capacity after long lines, small trailing fragments, independent copies and oversized line handling.",
       "sha256": "e7ef612704c66fa4adcdb533e0d6aeb1cb456514f287ceb47864254292353918"
@@ -715,6 +719,10 @@
     "macos/Sources/AgentSpeedCore/Parsing/CodexParser.swift": {
       "reason": "Propagate explicit Codex error/aborted-turn markers into local stopped-state metadata; reset when generation resumes. Backport upstream 004bc9b copied-prefix filtering before local stop side effects; preserve actual child output, model, pricing and error-stop behavior.",
       "sha256": "e5e4dd026dc651c5b43624de4fb16b1ab85d06e9884b713d626c89f9d7fb291a"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/Deduper.swift": {
+      "reason": "Defer the exact-key owners reservation until the first exact claim so empty monitors and hashed history dedupers do not retain an unused table; preserve exact ownership, FIFO eviction, capacity and hashed semantics.",
+      "sha256": "4f14f3af88fcb658dfda1587e3381f4dd4d18fa86e783fb82e93fe7db24e655a"
     },
     "macos/Sources/AgentSpeedCore/Parsing/DshLine.swift": {
       "reason": "Classify explicit DSH error/abort events as local display-stop metadata.",

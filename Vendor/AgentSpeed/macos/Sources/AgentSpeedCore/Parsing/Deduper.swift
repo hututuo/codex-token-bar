@@ -26,7 +26,6 @@ struct Deduper: Sendable {
 
     init(capacity: Int = Deduper.defaultCapacity) {
         self.capacity = max(1, capacity)
-        owners.reserveCapacity(min(self.capacity, 4096))
     }
 
     /// Unbounded ownership by key hash; keys owned by files analysed earlier are added with `insertSettled`.
@@ -42,6 +41,9 @@ struct Deduper: Sendable {
     }
 
     var count: Int { ledger?.count ?? owners.count }
+
+    /// Exact-key table storage, excluding the separate hashed ledger (tests).
+    var ownerCapacity: Int { owners.capacity }
 
     func contains(_ key: String) -> Bool {
         if let ledger { return ledger.contains(KeyHash.fnv1a(key)) }
@@ -59,6 +61,9 @@ struct Deduper: Sendable {
         if let owner = owners[key] {
             return owner == file ? .sameFile : .otherFile
         }
+        // Empty monitors and history-only hashed dedupers need no exact-key
+        // table. Keep the original reservation once the first key arrives.
+        if owners.isEmpty { owners.reserveCapacity(min(capacity, 4096)) }
         if ring.count < capacity {
             ring.append(key)
         } else {

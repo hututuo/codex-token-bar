@@ -62,9 +62,31 @@ private struct ClientPriceTally: Sendable {
     }
 }
 
-private enum ExactBundledPriceEntry {
-    case unique(PriceModel)
+enum ExactBundledPriceEntry: Equatable {
+    case unique(Int)
     case ambiguous
+
+    /// Indices borrow the immutable catalog instead of copying a PriceModel
+    /// value into every exact alias entry. Same-ID duplicates keep the first
+    /// model, and an ambiguous key can never become unique again.
+    static func makeIndex(for models: [PriceModel]) -> [String: Self] {
+        var entries: [String: Self] = [:]
+        for (index, model) in models.enumerated() {
+            for identifier in [model.id] + model.aliases {
+                let key = identifier.lowercased()
+                guard !key.isEmpty else { continue }
+                switch entries[key] {
+                case nil:
+                    entries[key] = .unique(index)
+                case .some(.unique(let previous)) where models[previous].id == model.id:
+                    break
+                default:
+                    entries[key] = .ambiguous
+                }
+            }
+        }
+        return entries
+    }
 }
 
 private struct ClientBillingModel {
@@ -95,24 +117,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     private typealias DailyCache = (revision: Int64, now: Date, timezone: String, rows: [ClientTrendBucket])
     private var dailyCache: DailyCache?
 
-    private static let exactBundledPriceEntries: [String: ExactBundledPriceEntry] = {
-        var entries: [String: ExactBundledPriceEntry] = [:]
-        for priceModel in PriceBook.bundled.models {
-            for identifier in [priceModel.id] + priceModel.aliases {
-                let key = identifier.lowercased()
-                guard !key.isEmpty else { continue }
-                switch entries[key] {
-                case nil:
-                    entries[key] = .unique(priceModel)
-                case .some(.unique(let previous)) where previous.id == priceModel.id:
-                    break
-                default:
-                    entries[key] = .ambiguous
-                }
-            }
-        }
-        return entries
-    }()
+    private static let exactBundledPriceEntries = ExactBundledPriceEntry.makeIndex(for: PriceBook.bundled.models)
 
     init(url: URL, readOnly: Bool = false) throws {
         self.url = url
@@ -805,8 +810,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             entry = exactBundledPriceEntries[identifier]
             explicitFast = true
         }
-        guard case .unique(let priceModel)? = entry else { return nil }
-        return ClientBillingModel(model: priceModel, explicitFast: explicitFast)
+        guard case .unique(let modelIndex)? = entry else { return nil }
+        return ClientBillingModel(model: PriceBook.bundled.models[modelIndex], explicitFast: explicitFast)
     }
 
     private static func apiCostMicroUSD(

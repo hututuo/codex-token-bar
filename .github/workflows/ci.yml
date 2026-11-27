@@ -213,6 +213,18 @@ jobs:
             --require testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches \
             --require testCopiesKeepFirstAllocationAndReplacementIndependent \
             --require testDayBoundariesAndWidenedDurationsPreservePeakDistribution \
+            --require testEmptyExactDedupersDoNotReserveForReadOnlyQueries \
+            --require testFirstExactClaimMatchesOriginalReservation \
+            --require testDefaultFIFOEvictsAt65536WithoutRefreshingRepeatedKeys \
+            --require testCapacityOneAndClampedCapacitiesPreserveFIFOOwnership \
+            --require testCopiesBeforeFirstClaimAllocateAndOwnKeysIndependently \
+            --require testCopiesAfterAllocationKeepOwnersAndFIFOIndependent \
+            --require testHashedOperationsNeverReserveExactOwners \
+            --require testExactPriceIndexMatchesIndependentGroupingOfEveryBundledIdentifier \
+            --require testExactPriceIndexKeepsFirstSameIDAndNeverResolvesAnAmbiguousAlias \
+            --require testSummariesPriceEachKnownRequestAndKeepUnpricedRowsVisible \
+            --require testSharedPriceBookUsesEventTimeForDeepSeekPeakHolidayAndHistoricalRates \
+            --require testFable52StandardFastAndCacheLifetimesKeepFable51Rates \
             --require testSharedDailyLimitDoesNotClaimClearPendingOrIncreaseLocalRuns \
             --require testSharedDailyLimitAtMidnightExcludesYesterdayAndPreservesRejectedLedger \
             --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
