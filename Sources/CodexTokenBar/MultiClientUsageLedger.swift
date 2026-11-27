@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import SQLite3
 import AgentSpeedCore
 
 struct ClientUsageSummary: Identifiable, Equatable, Sendable {
@@ -318,13 +319,33 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             // during migration. VACUUM INTO needs a conflicting source lock;
             // SQLite's online backup API can snapshot this stable, read-only view.
             let destination = SQLiteDatabaseDriver(url: target, bypassBusinessRoutes: true)
-            try destination.withConnection { try $0.restorePhysicalDatabase(from: url) }
+            try destination.withConnection { connection in
+                try connection.restorePhysicalDatabase(from: url)
+                // sqlite3_backup preserves the source WAL header. Normalize
+                // this standalone snapshot before any read-only consumer opens
+                // it; otherwise SQLite may require sidecars absent from backup.
+                let checkpointStatus = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE)") {
+                    $0.int(0) ?? 1
+                }.first ?? 1
+                guard checkpointStatus == 0 else {
+                    throw SQLiteDatabaseError(operation: "Checkpoint SQLite backup", code: SQLITE_BUSY,
+                        message: "Backup WAL could not be checkpointed", path: target.path)
+                }
+                let journalMode = try connection.readRows("PRAGMA journal_mode=DELETE") {
+                    ($0.text(0) ?? "").lowercased()
+                }.first ?? ""
+                guard journalMode == "delete" else {
+                    throw SQLiteDatabaseError(operation: "Normalize SQLite backup", code: SQLITE_ERROR,
+                        message: "Backup journal mode could not be changed to DELETE", path: target.path)
+                }
+            }
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
             return target
         } catch {
             try? FileManager.default.removeItem(at: target)
             try? FileManager.default.removeItem(atPath: target.path + "-wal")
             try? FileManager.default.removeItem(atPath: target.path + "-shm")
+            try? FileManager.default.removeItem(atPath: target.path + "-journal")
             throw error
         }
     }

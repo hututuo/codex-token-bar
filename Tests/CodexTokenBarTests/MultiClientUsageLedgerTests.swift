@@ -516,7 +516,11 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         let ledger = try MultiClientUsageLedger(url: url)
         _ = try ledger.ingest([event()])
         let backup = try ledger.backup()
-        let copy = SQLiteDatabaseDriver(url: backup, readOnly: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
+        let copy = SQLiteDatabaseDriver(url: backup, readOnly: true, createsFileIfMissing: false)
+        XCTAssertEqual(try copy.readRows("PRAGMA journal_mode") { $0.text(0) }.first!, "delete")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path + "-shm"))
         XCTAssertEqual(try copy.readRows("SELECT SUM(output_tokens) FROM client_usage_events") { $0.int64(0) }.first!, 20)
         try ledger.database.execute("PRAGMA user_version=99")
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
@@ -728,15 +732,15 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         ]
 
         for version in [1, MultiClientUsageLedger.schemaVersion] {
-            for invalid in malformed {
+            for (index, invalid) in malformed.enumerated() {
                 let directory = root.appendingPathComponent(
-                    "missing-key-v\(version)-\(invalid.table)", isDirectory: true
+                    "missing-key-v\(version)-\(index)-\(invalid.table)", isDirectory: true
                 )
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let sourceURL = directory.appendingPathComponent("source.sqlite")
                 _ = try MultiClientUsageLedger(url: sourceURL)
                 let source = SQLiteDatabaseDriver(url: sourceURL)
-                try source.execute("DROP TABLE \(invalid.table); \(invalid.ddl); PRAGMA user_version=\(version)")
+                try source.execute("DROP TABLE IF EXISTS \(invalid.table); \(invalid.ddl); PRAGMA user_version=\(version)")
                 let targetURL = directory.appendingPathComponent("usage.sqlite")
                 _ = try prepareDeleteModeFixture(driver: source, url: targetURL)
 
@@ -762,7 +766,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
                 client TEXT NOT NULL, source_key TEXT NOT NULL, offset INTEGER NOT NULL,
                 size INTEGER NOT NULL, modified REAL NOT NULL, identity TEXT NOT NULL);
             CREATE UNIQUE INDEX checkpoint_identity ON client_file_checkpoints(source_key,client);
-            DROP TABLE multi_usage_metadata;
+            DROP TABLE IF EXISTS multi_usage_metadata;
             CREATE TABLE multi_usage_metadata (key TEXT NOT NULL, value TEXT NOT NULL);
             CREATE UNIQUE INDEX metadata_identity ON multi_usage_metadata(key);
             """)
@@ -787,9 +791,10 @@ final class MultiClientUsageLedgerTests: XCTestCase {
     func testWALSchemaRefusalPreservesMainAndWALContents() throws {
         let url = root.appendingPathComponent("wal-schema-refusal.sqlite")
         _ = try MultiClientUsageLedger(url: url)
-        let writer = SQLiteDatabaseDriver(url: url, enableWAL: false)
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: true)
 
         try writer.withConnection { connection in
+            try connection.execute("PRAGMA wal_autocheckpoint=0")
             try connection.execute("""
                 DROP TABLE client_usage_events;
                 CREATE TABLE client_usage_events (
