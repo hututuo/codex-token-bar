@@ -520,25 +520,38 @@ def archive_state(home, destination, env):
     return {"renamed": moves, "archive": str(destination)}
 
 
-def post_measurement_memory_diagnostics(pid, destination, env):
+def post_measurement_memory_diagnostics(pid, destination, env, *, retained_graph=False):
     """Supplemental cloud-only evidence, after the last resource sample.
 
     These tools may suspend the target briefly. Their CPU and allocations must
     never enter the paired measurement, and their availability is not a reason
     to turn an otherwise valid resource sample into a performance failure.
-    No object contents, addresses, stack logging or privileged access is used.
+    No object contents, stack logging or privileged access is used. The optional
+    retained-reference tree includes addresses in this disposable synthetic
+    process; it is diagnostic evidence, not a measured allocation saving.
     """
     result = {"outsideMeasurement": True, "startedMonotonicNS": time.monotonic_ns(), "tools": []}
-    for name, argv in (("vmmap", ["/usr/bin/vmmap", "-summary", str(pid)]),
-                       ("heap", ["/usr/bin/heap", "-s", "--noContent", str(pid)])):
+    tools = [("vmmap", ["/usr/bin/vmmap", "-summary", str(pid)]),
+             ("heap", ["/usr/bin/heap", "-s", "--noContent", str(pid)])]
+    if retained_graph:
+        tools.append(("retained-graph", ["/usr/bin/leaks", "--noContent", "--nostacks",
+                                         "--groupByType", "--referenceTree", str(pid)]))
+    for name, argv in tools:
         path = destination / f"post-measurement-{name}.txt"
         entry = {"tool": name, "file": path.name}
         try:
             completed = command(argv, env=env, check=False)
             payload = completed.stdout + completed.stderr
             path.write_bytes(payload)
-            entry.update(status="PASS" if completed.returncode == 0 else "UNAVAILABLE",
+            # leaks(1) reports a completed scan that found leaks, not a failed
+            # collection. Preserve that separate tool finding explicitly.
+            collected = completed.returncode in ((0, 1) if name == "retained-graph" else (0,))
+            entry.update(status="PASS" if collected else "UNAVAILABLE",
                          returnCode=completed.returncode, bytes=len(payload), sha256=digest(payload))
+            if name == "retained-graph":
+                entry["relationshipModel"] = "one guessed parent per allocation, not all retaining references"
+                if collected:
+                    entry["leaksDetectedByTool"] = completed.returncode == 1
         except (OSError, subprocess.SubprocessError) as error:
             def bytes_(value):
                 return value if isinstance(value, bytes) else (value or "").encode()
@@ -635,7 +648,8 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
             # No sampler call or additional metrics row is allowed after this
             # boundary: native heap inspection is deliberately out of band.
             result["measurementEndedMonotonicNS"] = measured[-1]["monotonicNS"]
-            result["postMeasurementMemoryDiagnostics"] = post_measurement_memory_diagnostics(process.pid, run, env)
+            result["postMeasurementMemoryDiagnostics"] = post_measurement_memory_diagnostics(
+                process.pid, run, env, retained_graph=args.retained_graph)
             result["status"] = "PASS"
     except (BenchError, OSError, ValueError, subprocess.SubprocessError) as error:
         result.update(status=getattr(error, "status", "FAILED"), reason=str(error))
@@ -710,6 +724,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--warmup", type=int, default=120)
     parser.add_argument("--duration", type=int, default=120)
     parser.add_argument("--startup-timeout", type=int, default=300)
+    parser.add_argument("--retained-graph", action="store_true",
+                        help="Capture a no-content reference tree only after each trial's final sample")
     args = parser.parse_args(argv)
     require(args.warmup >= 120 and args.duration >= 120 and 30 <= args.startup_timeout <= 1800,
             "warmup/duration must be at least 120s; startup timeout must be 30..1800s", "REFUSED")
@@ -746,6 +762,7 @@ def main(argv=None):
         summary.update(actualAccountHome=str(home), runtimeRoot=str(root),
                        actualOS=platform.platform(), architecture=platform.machine(),
                        warmupSeconds=args.warmup, durationSeconds=args.duration,
+                       retainedGraphRequested=args.retained_graph,
                        staticFixture=True, productionBuildsPerformed=False,
                        order=["baseline/candidate", "candidate/baseline", "baseline/candidate"])
         # The original account home is passed unchanged; only source locations vary.

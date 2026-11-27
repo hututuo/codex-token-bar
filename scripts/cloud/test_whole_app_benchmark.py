@@ -321,6 +321,66 @@ class WholeAppHarnessTests(unittest.TestCase):
             self.assertEqual([entry["status"] for entry in evidence["tools"]], ["UNAVAILABLE", "UNAVAILABLE"])
             self.assertEqual((Path(tmp) / "post-measurement-heap.txt").read_bytes(), b"permission denied")
 
+    def test_retained_graph_is_opt_in_and_does_not_change_the_resource_protocol(self):
+        argv = ["--baseline-app", "/synthetic/baseline.app", "--candidate-app", "/synthetic/candidate.app",
+                "--output-dir", "/synthetic/evidence"]
+        original = vars(bench.parse_arguments(argv))
+        diagnostic = vars(bench.parse_arguments(argv + ["--retained-graph"]))
+        self.assertFalse(original.pop("retained_graph"))
+        self.assertTrue(diagnostic.pop("retained_graph"))
+        self.assertEqual(diagnostic, original)
+        self.assertEqual(original["responses"], [2000, 20000])
+        self.assertEqual((original["trials"], original["warmup"], original["duration"]), (3, 120, 120))
+
+    def test_retained_graph_preserves_no_content_output_and_exact_tool_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = b"synthetic no-content reference tree: 0x1234 owner\n"
+            completed = SimpleNamespace(returncode=0, stdout=payload, stderr=b"")
+            env = {"HOME": "/synthetic-home"}
+            with patch.object(bench, "command", return_value=completed) as command:
+                evidence = bench.post_measurement_memory_diagnostics(123, root, env, retained_graph=True)
+            self.assertTrue(evidence["outsideMeasurement"])
+            self.assertEqual([call.args[0] for call in command.call_args_list], [
+                ["/usr/bin/vmmap", "-summary", "123"], ["/usr/bin/heap", "-s", "--noContent", "123"],
+                ["/usr/bin/leaks", "--noContent", "--nostacks", "--groupByType", "--referenceTree", "123"]])
+            for call in command.call_args_list:
+                self.assertEqual(call.kwargs, {"env": env, "check": False})
+            graph = evidence["tools"][-1]
+            self.assertEqual(graph["tool"], "retained-graph")
+            self.assertEqual(graph["status"], "PASS")
+            self.assertFalse(graph["leaksDetectedByTool"])
+            self.assertIn("not all retaining references", graph["relationshipModel"])
+            self.assertEqual(graph["bytes"], len(payload))
+            self.assertEqual(graph["sha256"], bench.digest(payload))
+            self.assertEqual((root / graph["file"]).read_bytes(), payload)
+
+    def test_retained_graph_unavailability_does_not_fail_completed_measurements(self):
+        for failure in (SimpleNamespace(returncode=2, stdout=b"partial tree\n", stderr=b"unavailable\n"),
+                        bench.subprocess.TimeoutExpired("leaks", 30, output=b"partial tree\n")):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                ok = SimpleNamespace(returncode=0, stdout=b"summary\n", stderr=b"")
+                with patch.object(bench, "command", side_effect=[ok, ok, failure]) as command:
+                    evidence = bench.post_measurement_memory_diagnostics(123, Path(tmp), {}, retained_graph=True)
+                self.assertEqual(command.call_count, 3)
+                self.assertEqual([x["status"] for x in evidence["tools"]], ["PASS", "PASS", "UNAVAILABLE"])
+                graph = evidence["tools"][-1]
+                raw = (Path(tmp) / graph["file"]).read_bytes()
+                self.assertTrue(raw.startswith(b"partial tree\n"))
+                self.assertEqual(graph["sha256"], bench.digest(raw))
+                self.assertEqual(graph["bytes"], len(raw))
+
+    def test_retained_graph_keeps_a_completed_leak_finding_distinct_from_collection_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ok = SimpleNamespace(returncode=0, stdout=b"summary\n", stderr=b"")
+            finding = SimpleNamespace(returncode=1, stdout=b"synthetic reference tree\n", stderr=b"")
+            with patch.object(bench, "command", side_effect=[ok, ok, finding]):
+                evidence = bench.post_measurement_memory_diagnostics(123, Path(tmp), {}, retained_graph=True)
+            graph = evidence["tools"][-1]
+            self.assertEqual(graph["status"], "PASS")
+            self.assertEqual(graph["returnCode"], 1)
+            self.assertTrue(graph["leaksDetectedByTool"])
+
     def test_first_rejected_window_is_preserved_before_the_gate_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

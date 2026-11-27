@@ -28,6 +28,10 @@ on:
         description: 'Run only the production aggregate pair'
         type: boolean
         default: false
+      retained_graph:
+        description: 'Collect a no-content reference tree after each whole-app measurement'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -162,13 +166,18 @@ jobs:
           Path('whole-app-build-evidence/provenance.json').write_text(json.dumps(record,indent=2)+'\n')
           PY
       - name: Run full production application with synthetic sources
+        env:
+          RETAINED_GRAPH: ${{ inputs.retained_graph && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          python3 harness/scripts/cloud/whole_app_benchmark.py \
-            --baseline-app "$GITHUB_WORKSPACE/baseline-benchmark.app" \
-            --candidate-app "$GITHUB_WORKSPACE/candidate-benchmark.app" \
-            --output-dir "$GITHUB_WORKSPACE/whole-app-evidence" \
+          args=(
+            --baseline-app "$GITHUB_WORKSPACE/baseline-benchmark.app"
+            --candidate-app "$GITHUB_WORKSPACE/candidate-benchmark.app"
+            --output-dir "$GITHUB_WORKSPACE/whole-app-evidence"
             --responses 2000 20000 --warmup 120 --duration 120
+          )
+          if [[ "$RETAINED_GRAPH" == true ]]; then args+=(--retained-graph); fi
+          python3 harness/scripts/cloud/whole_app_benchmark.py "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
