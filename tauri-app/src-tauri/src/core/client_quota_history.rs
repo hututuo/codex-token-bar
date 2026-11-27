@@ -404,7 +404,7 @@ mod tests {
             assert_eq!(super::super::local_quota_cache::scoped_source(item["source"].as_str().unwrap(),
                 item["organization"].as_str()), item["expected"].as_str().unwrap());
         }
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = open_schema_two_without_history();
         let legacy = reading("claudeDesktop", "local-desktop-history", "available", Some(timestamp(1000)), 10.0);
         let mut first = legacy.clone();
         first.source = super::super::local_quota_cache::scoped_source(&legacy.source, Some("Org-A"));
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn identical_samples_dedupe_per_five_minutes_and_changed_fraction_is_kept() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = open_schema_two_without_history();
         let first = reading(
             "claudeDesktop",
             "local-desktop-history",
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_future_api_and_invalid_percentage_observations() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = open_schema_two_without_history();
         let readings = [
             reading(
                 "claudeDesktop",
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn reads_keep_client_sources_separate_for_frontend_filtering() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = open_schema_two_without_history();
         let readings = [
             reading(
                 "claudeDesktop",

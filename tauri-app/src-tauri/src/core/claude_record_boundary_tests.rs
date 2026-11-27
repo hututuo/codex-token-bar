@@ -199,9 +199,10 @@ fn assert_checkpoint(connection: &Connection, client: &str, path: &Path, offset:
     assert_eq!(
         checkpoint.fingerprint,
         Some(format!(
-            "claude-cache-lifetimes-v1|{}:{}",
+            "claude-entrypoint-v3|claude-cache-lifetimes-v1|{}:{}|physical-v1:{}",
             prefix.len(),
-            hex_digest(&prefix)
+            hex_digest(&prefix),
+            source_file_witness(&fs::File::open(path).unwrap()).unwrap().checkpoint_key()
         ))
     );
 }

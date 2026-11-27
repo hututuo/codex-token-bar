@@ -728,7 +728,7 @@ fn v1_migration_preserves_legacy_rows_and_isolates_sources() {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
-            "PRAGMA user_version=17;
+            "PRAGMA user_version=2;
              CREATE TABLE client_usage_events(event_id TEXT PRIMARY KEY);
              INSERT INTO client_usage_events(event_id) VALUES('kept');
              CREATE TABLE activity_speed_meta(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID;
@@ -821,7 +821,7 @@ fn v1_migration_preserves_legacy_rows_and_isolates_sources() {
     assert_eq!(retained_ids, 1);
     assert_eq!(retained_buckets, 1);
     assert_eq!(copied_identity, LEGACY_SOURCE_IDENTITY);
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 2);
     assert_eq!(ledger_rows, 1);
     assert!(
         sample_plan.contains("activity_speed_samples_v2_time"),

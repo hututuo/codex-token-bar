@@ -2504,7 +2504,11 @@ fn scan_transcript_file_with_budget(
                 {
                     return Ok(());
                 }
-                if saved.size == metadata.len() {
+                // An unchanged, partly imported file must continue at its
+                // checkpoint. Only a changed same-size witness requires replay.
+                if saved.size == metadata.len()
+                    && saved.fingerprint.as_deref() != Some(checkpoint_fingerprint.as_str())
+                {
                     0
                 } else {
                     saved.offset
@@ -4078,7 +4082,12 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
             |row| row.get(0),
         )?;
         if existing_tables > 0 {
-            backup_before_upgrade(&transaction, database_path, schema_version)?;
+            // SQLite cannot back up a connection that holds a write transaction:
+            // backup_step returns BUSY even before this transaction performs DDL.
+            // Keep the writer lock to freeze committed data through migration,
+            // and read that committed snapshot through a separate connection.
+            let backup_source = open_read_only(database_path)?;
+            backup_before_upgrade(&backup_source, database_path, schema_version)?;
         }
     }
     transaction.execute_batch(
@@ -7574,6 +7583,33 @@ mod tests {
 
     #[test]
     fn schema_upgrade_backs_up_existing_data_and_future_schema_is_left_untouched() {
+        for journal_mode in ["DELETE", "WAL"] {
+            let temporary = TempDir::new("schema-committed-backup");
+            let database = temporary.path().join("multi-client-usage.sqlite");
+            let legacy = open_database(&database).unwrap();
+            legacy.pragma_update(None, "journal_mode", journal_mode).unwrap();
+            legacy.pragma_update(None, "wal_autocheckpoint", 0_i64).unwrap();
+            legacy.execute_batch("CREATE TABLE legacy(value TEXT); INSERT INTO legacy VALUES('preserved'); PRAGMA user_version=0;").unwrap();
+            if journal_mode == "WAL" {
+                assert!(fs::metadata(database.with_extension("sqlite-wal")).unwrap().len() > 32);
+            }
+
+            ensure_schema(&legacy, &database).unwrap();
+            assert_eq!(read_schema_version(&legacy).unwrap(), SCHEMA_VERSION);
+            assert_eq!(legacy.query_row("SELECT value FROM legacy", [], |row| row.get::<_, String>(0)).unwrap(), "preserved");
+            let backups = fs::read_dir(temporary.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.file_name().unwrap().to_string_lossy().contains("backup-v0") && path.extension().is_some_and(|extension| extension == "sqlite"))
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1, "{journal_mode}");
+            let backup = open_read_only(&backups[0]).unwrap();
+            assert_eq!(read_schema_version(&backup).unwrap(), 0);
+            assert_eq!(backup.query_row("SELECT value FROM legacy", [], |row| row.get::<_, String>(0)).unwrap(), "preserved");
+            assert_eq!(backup.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='client_usage_events'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(backup.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)).unwrap(), "ok");
+        }
         let temporary = TempDir::new("schema-preservation");
         let database = temporary.path().join("multi-client-usage.sqlite");
         let legacy = Connection::open(&database).unwrap();

@@ -324,7 +324,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let shared_path = root.path().join("multi-client-usage.sqlite");
         crate::core::multi_client_usage::initialize_usage_database_at(&shared_path).unwrap();
-        let legacy = root.path().join("codex-ledger.sqlite");
+        let legacy = root.path().join("body-speed-public097.sqlite");
         let store = BodySpeedTrendStore::open_shared(&legacy, &shared_path).unwrap();
         let source = legacy_path(&legacy).unwrap();
         let now = 1_800_000_600.0;

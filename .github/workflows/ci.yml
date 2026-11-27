@@ -566,6 +566,9 @@ jobs:
               --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
               --require schema_admission_rejects_complete_tables_with_incompatible_keys \
               --require schema_admission_accepts_permuted_unique_indexes \
+              --require schema_upgrade_backs_up_existing_data_and_future_schema_is_left_untouched \
+              --require schema_v1_upgrade_backs_up_and_preserves_events_and_checkpoints \
+              --require jsonl_scanner_resumes_after_its_four_mib_chunk \
               --require stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes \
               --require concurrent_b_initializers_serialize_schema_v2_initialization \
               --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
@@ -584,6 +587,12 @@ jobs:
               --allow-untracked-output runtime-recovery-production.json \
               --allow-untracked-output runtime-recovery-production.validation.json \
               --require failed_partial_backup_is_never_published \
+              --require v1_migration_preserves_legacy_rows_and_isolates_sources \
+              --require standalone_schema_initialization_preserves_user_version_and_unrelated_rows \
+              --require identical_samples_dedupe_per_five_minutes_and_changed_fraction_is_kept \
+              --require organization_history_uses_shared_digest_and_keeps_legacy_rows_separate \
+              --require reads_keep_client_sources_separate_for_frontend_filtering \
+              --require rejects_unknown_future_api_and_invalid_percentage_observations \
               --require shared_quota_summary_fixture_keeps_only_stable_pool_ids \
               --require claude_desktop_offline_samples_survive_idle_and_reset_boundaries \
               --require discovery_requires_installed_process_owned_loopback_port_and_current_csrf \
@@ -612,6 +621,9 @@ jobs:
               --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
               --require schema_admission_rejects_complete_tables_with_incompatible_keys \
               --require schema_admission_accepts_permuted_unique_indexes \
+              --require schema_upgrade_backs_up_existing_data_and_future_schema_is_left_untouched \
+              --require schema_v1_upgrade_backs_up_and_preserves_events_and_checkpoints \
+              --require jsonl_scanner_resumes_after_its_four_mib_chunk \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \
               --require running_task_titles_use_database_fallbacks_and_agent_metadata \
               --require orphan_start_needs_current_writer_while_terminal_always_wins \
