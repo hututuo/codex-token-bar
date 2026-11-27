@@ -193,7 +193,7 @@ def bounded_capture(argv, env, destination, timeout, max_bytes):
     return result
 
 
-def collect_allocations(process, destination, env, profile=SELECTION_PROFILE):
+def collect_allocations(process, destination, env, profile=SELECTION_PROFILE, class_summary=False):
     """Inspect selected live blocks after sampling; selection is not ownership proof."""
     roles, strategy = selection_configuration(profile)
     started = time.monotonic_ns()
@@ -203,6 +203,7 @@ def collect_allocations(process, destination, env, profile=SELECTION_PROFILE):
               "selectionPattern": HEAP_PATTERN, "maxAddresses": MAX_ADDRESSES,
               "selectionProfile": profile, "selectionStrategy": strategy,
               "missingSelectionRoles": list(roles),
+              "classSummaryRequested": class_summary,
               "selectedLiveAddressesOnly": True,
               "limits": {"seconds": COLLECTION_SECONDS, "heapBytes": HEAP_BYTES,
                          "heapSeconds": HEAP_SECONDS,
@@ -211,6 +212,10 @@ def collect_allocations(process, destination, env, profile=SELECTION_PROFILE):
               "limitations": ["sampled allocation stacks are not retaining paths or complete heap coverage",
                               "a selected address can be released or reused before stack capture",
                               "requested stack logging is only confirmed where recorded frames are obtained"]}
+    if class_summary:
+        result["limits"].update(classSummarySeconds=HEAP_SECONDS, classSummaryBytes=HEAP_BYTES)
+        result["classSummary"] = {"status": "SKIPPED",
+                                  "reason": "exact App child exited or collection deadline reached"}
     bench.write_json(destination / "allocation-diagnostics.json", result)
     if process.poll() is not None:
         result["reason"] = "exact App child exited before collection"
@@ -251,11 +256,24 @@ def collect_allocations(process, destination, env, profile=SELECTION_PROFILE):
                          status="COLLECTED" if recorded else "UNAVAILABLE")
             if not recorded:
                 entry["reason"] = "address not live, no recorded frames, or tool unavailable"
+        # A full class summary can expose aggregates of small allocations excluded
+        # by the address filter. It gets only the time left after stack capture.
+        if class_summary and process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                captured = bounded_capture(["/usr/bin/heap", "-s", "--noContent", str(process.pid)],
+                                           env, destination / "allocation-heap-summary.txt",
+                                           min(HEAP_SECONDS, remaining), HEAP_BYTES)
+                captured["tool"] = "heap-summary"
+                result["classSummary"] = captured
+                result["tools"].append(captured)
         count = sum(row["status"] == "COLLECTED" for row in result["allocations"])
         result["recordedStackAddresses"] = count
         if count:
             result["status"] = ("COLLECTED" if count == len(addresses) and
-                                all(tool["status"] == "COLLECTED" for tool in result["tools"]) else "PARTIAL")
+                                all(tool["status"] == "COLLECTED" for tool in result["tools"]) and
+                                (not class_summary or result["classSummary"]["status"] == "COLLECTED")
+                                else "PARTIAL")
     result["finishedMonotonicNS"] = time.monotonic_ns()
     bench.write_json(destination / "allocation-diagnostics.json", result)
     return result
@@ -266,6 +284,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--candidate-app", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--selection-profile", choices=tuple(SELECTION_PROFILES), default=SELECTION_PROFILE)
+    parser.add_argument("--class-summary", action="store_true",
+                        help="capture a full class summary using the time left after selected stack queries")
     args = parser.parse_args(argv)
     args.responses, args.trials = [20000], 1
     args.warmup, args.duration, args.startup_timeout, args.retained_graph = 120, 120, 300, False
@@ -277,6 +297,7 @@ def main(argv=None):
     output = args.output_dir.absolute()
     summary = {"schemaVersion": 1, "purpose": PURPOSE, "performanceComparable": False,
                "selectionProfile": args.selection_profile,
+               "classSummaryRequested": args.class_summary,
                "performanceVerdict": "NOT_EVALUATED", "metricsEligibleForHalvingAcceptance": False,
                "instrumentation": {"MallocStackLogging": "1"}, "loggingEnabledAt": "process-start",
                "status": "NOT_RUN", "results": [], "staticFixture": True,
@@ -319,7 +340,8 @@ def main(argv=None):
         bench.require(dt.date.today() == local_day, "local day changed before diagnostic", "NOT_RUN")
         result = bench.run_trial("candidate", 1, app, runtime_app, home, fixture_root, fixture, env, args,
                                  output, windows, display, app_env=dict(env, MallocStackLogging="1"),
-                                 post_sample=partial(collect_allocations, profile=args.selection_profile), purpose=PURPOSE)
+                                 post_sample=partial(collect_allocations, profile=args.selection_profile,
+                                                     class_summary=args.class_summary), purpose=PURPOSE)
         summary["results"].append(result)
         bench.require(dt.date.today() == local_day, "local day changed during diagnostic", "NOT_RUN")
         summary["status"] = result["postMeasurementMemoryDiagnostics"]["status"]

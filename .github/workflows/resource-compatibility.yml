@@ -43,12 +43,16 @@ on:
           - data-string-float-v1
           - exact-64k-spread-v1
         default: data-string-float-v1
+      allocation_class_summary:
+        description: 'Also capture all class totals using only remaining diagnostic time'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: resource-${{ inputs.allocation_diagnostic && 'allocation' || 'pair' }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
+  group: resource-${{ inputs.allocation_diagnostic && format('allocation-{0}-{1}', inputs.allocation_selection_profile || 'data-string-float-v1', inputs.allocation_class_summary && 'classes' || 'addresses') || 'pair' }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -207,6 +211,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       SELECTION_PROFILE: ${{ inputs.allocation_selection_profile || 'data-string-float-v1' }}
+      ALLOCATION_CLASS_SUMMARY: ${{ inputs.allocation_class_summary && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,6 +246,7 @@ jobs:
             'purpose':'allocation-diagnostic', 'performanceComparable':False,
             'performanceVerdict':'NOT_EVALUATED', 'productSourceSha':os.environ['SOURCE_SHA'],
             'selectionProfile':os.environ['SELECTION_PROFILE'],
+            'classSummaryRequested':os.environ['ALLOCATION_CLASS_SUMMARY']=='true',
             'actualProductHead':head('candidate'), 'harnessSha':os.environ['GITHUB_SHA'],
             'actualHarnessHead':head('harness'), 'runId':os.environ['GITHUB_RUN_ID'],
             'runAttempt':os.environ['GITHUB_RUN_ATTEMPT'], 'buildConfiguration':'release',
@@ -283,10 +289,13 @@ jobs:
       - name: Collect bounded candidate allocation stacks
         run: |
           set -euo pipefail
-          python3 harness/scripts/cloud/whole_app_allocations.py \
-            --candidate-app "$GITHUB_WORKSPACE/candidate-allocation.app" \
-            --selection-profile "$SELECTION_PROFILE" \
+          args=(
+            --candidate-app "$GITHUB_WORKSPACE/candidate-allocation.app"
+            --selection-profile "$SELECTION_PROFILE"
             --output-dir "$GITHUB_WORKSPACE/allocation-evidence"
+          )
+          [[ "$ALLOCATION_CLASS_SUMMARY" != true ]] || args+=(--class-summary)
+          python3 harness/scripts/cloud/whole_app_allocations.py "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

@@ -62,6 +62,8 @@
 
 形成版本矩阵 `46070506166` 已完成并独立审计通过：8/8 格、64 份 production proof、963 项检查，16 份 producer ZIP 的 256 成员、8 份 artifact ZIP digest、每格 249 个 production Git blob、最终恢复材料与 SQLite migration-state 均一致，全部 `cfgTest=false`。证据在 `/tmp/tokenbar-formed-run-46070506166/`；这是 synthetic Rust production 升级路径，尚未安装当前候选。
 
+后续另将该矩阵的 C 输入与产品 R `750449be49627722a86e2ce9b21c9f9cac55997b` 做 Git 对象等价核对：八格的 249 个 production blob、完整 tauri-app/Vendor tree、七份额外构建输入、26 份外部 Rust embed 依赖，以及四份 formed workflow/probe/harness 文件均无变化；macOS LF 与 Windows CRLF 的 probe 模板和注入哈希也对应保留的原始材料。清单为 `/tmp/tokenbar-formed-C-to-R-source-equivalence.json`。因此仅针对 C→R 这些修改，没有重复执行内容未变的 Rust 形成版本矩阵；`46070506166` 仍记为 C 的执行证据，不改记为 R 的原生执行或安装验收。
+
 资源 run `46070874247` 的 aggregate 子任务已成功并独立复核 482 项：schema2 输入 1200/12000、cold/cache-hit、24 records/12 pairs 的来源、字节哈希、物理行 oracle、数据库及语义一致。cold CPU 下降约 85.25%–87.74%，cache-hit 下降约 14.71%–18.64%；其 lifetime RSS 比值约 0.9776–1.0183，不含 physical footprint。该子系统结果不能替代仍在采样的整 App 配对。证据在 `/tmp/tokenbar-resource-run-46070874247/aggregate-independent-audit.md`。
 
 ## SharedSourceIO 上游读取候选
@@ -74,13 +76,19 @@
 
 其中公开升级 `46074134405` 已完成并独立审计通过：142 项选定测试实际 passed、0 failed、0 skipped/ignored，29 个 workflow steps 全部成功。两份 ZIP 与 API SHA-256/大小相符，26 份 fixture receipt 的 104 个哈希及 32 条 immutableFiles 全部匹配；Windows 四个 production recovery 阶段、19 个 manifest 场景/23 份报告、最终 A/B SQL、完整初次导出与公开原库的 typed rows/schema 均核对，862 个原始文件字节保全。证据在 `/tmp/tokenbar-public097-run-46074134405/AUDIT.md`。macOS 没有上传最终临时 A/B 库，最终 SQL 独立核对仅适用于 Windows；未保留单独的恢复前 WAL 字节快照。该结果不代替全量 CI、资源或安装验收。
 
+完整 CI `46074134352` 后续已完成并独立审计通过：14 份 artifact ZIP 与 API SHA-256 一致，checkout、执行前后封条与 17 份固定源文件均绑定该完整 SHA；SharedSourceIO 必执行 10 项和 discovery 必执行 13 项各有唯一实际 passed 事件。Swift XCTest 2677 passed / 38 skipped，Swift Testing 701 passed / 1 skipped；macOS Rust 1921 passed / 14 ignored，Windows Rust 1862 passed / 15 ignored，另行真实 helper IPC 1 passed。frontend/cloud/release Node 分别 1501/18/112 passed，release 另有 1 skip；Python 94 项、updater 11 项通过。两端 production 各 16 项检查、8 个强退阶段、24 次 reopen 和全部四份负控已核对。完整清单及边界在 `/tmp/tokenbar-ci-run-46074134352/audit.md`。可选矩阵未在该 CI 运行，生产依赖 audit 为 0 但 npm ci 报 3 个 high；这些计数不包括未执行的 filtered/ignored 测试，也不是安装验收。
+
+资源 run `46074193555` 的 aggregate 子任务另已独立审计通过：完整原始 ZIP/API SHA-256 一致，4,142 个成员逐项核对 CRC；保留全部审计材料与两个精确 executable，未展开无关 Cargo 中间产物。24 cases 的 48 组完整 output/mutation 比较，以及 78,000 个独立 counter/completeness/price/lastSeen 字段核对通过，seed 与全部 24 个修改后的 schema2 数据库符合物理行算术真值。1,200/12,000 档 cold CPU 比值分别为 0.12550/0.13879，cache-hit CPU 比值为 0.78644/0.95406；四档 after-loop peak RSS 比值约 0.97953–1.01826。证据为 `/tmp/tokenbar-resource-run-46074193555/audit/aggregate-audit.json`。这些是 Rust 子系统测量，不含 physical footprint，整 App 配对仍在采样。
+
 ## 原始页存储的后续候选
 
 新分配栈将一个 98,304 B 的 Data 分配定位到 C 的 `rawRead` 页读取入口。后续候选将 `Data(count:)` 后再写入，改为 `malloc(count)` 的独立未初始化存储，原 `Darwin.pread` 循环读满后通过 `Data(bytesNoCopy:count:deallocator:.free)` 转交所有权；任意读取错误在返回前释放裸存储。EINTR 重试、提前 EOF 的 EAGAIN、最后 stamp 校验、缓存预算与所有 probe/cap 语义保留；malloc 失败现在抛出 ENOMEM。缓存中的页保持不可变。两个独立静态审查未发现阻断，原生生命周期与字节回归仍待云端。
 
 新增两项公共 API 回归，覆盖热缓存上的 64 KiB 物理 probe、73 字节尾页、4 MiB cap、EOF 不读取、独立 descriptor offset、返回 Data 副本修改、另一 inode 的页/owner 逐出，以及重热后同 inode 同长度覆盖时旧快照保全。原先十项及新增两项均列入标准 Swift CI 的必执行清单。本地仍只运行轻量 execution-gate/workflow/YAML/bash/diff 检查，尚无本候选原生执行证据。
 
-该产品候选已推送为 `750449be49627722a86e2ce9b21c9f9cac55997b`。完整 CI `46075158971`、公开 0.9.7 升级 `46075158856`、资源配对 `46075190349` 分别绑定该完整 SHA；资源 dispatch receipt 为 `/tmp/tokenbar-dispatch-750449be-resource.json`，已经与 runId 及 head SHA 绑定。整 App baseline 仍为 `f9e917917df07a24a800bf63d00700d0028bcb28`，aggregate baseline 仍为 `3eadadc66168802643ef595712c739877083559e`。这些运行尚待完成后的原始产物独立审计；产品与先前候选的结果分别记录。
+该产品候选已推送为 `750449be49627722a86e2ce9b21c9f9cac55997b`。完整 CI `46075158971`、公开 0.9.7 升级 `46075158856`、资源配对 `46075190349` 分别绑定该完整 SHA；资源 dispatch receipt 为 `/tmp/tokenbar-dispatch-750449be-resource.json`，已经与 runId 及 head SHA 绑定。整 App baseline 仍为 `f9e917917df07a24a800bf63d00700d0028bcb28`，aggregate baseline 仍为 `3eadadc66168802643ef595712c739877083559e`。公开升级已取得下述独立审计，其余运行待完成后分别审计原始产物；产品与先前候选的结果分别记录。
+
+公开升级 `46075158856` 的 12 类独立审计全部通过：双平台 checkout 与精确 R 源码一致，两份 ZIP 的 API SHA-256/大小/CRC 全部匹配；Swift 8 项升级及 126 项支持回归、Windows 3 项 importer 与四阶段非 cfg(test) production recovery 实际通过，没有把 filtered/ignored 计作执行。19 个 manifest 场景/23 份报告、14 份重复 typed-SQL 投影、32 条 immutableFiles 哈希一致；Windows 最终 A 的两分区 token 总量为 162/310，quota id42 和 committed-before-exit witness 保全，B 的旧 body 仅一份且 canary 保留。审计前后 862 个原始文件字节不变，42 份原始 JSONL ZIP 成员与提取件相符。证据为 `/tmp/tokenbar-public097-run-46075158856/audit-report.json`。最终 SQL 独立核对适用于 Windows，macOS 未上传最终临时 A/B 库；最终 A 已 checkpoint，未单独保留恢复前的 crash-time main/WAL 对。强退 exit86、恢复前 WAL 存在与读取由精确源码及已完成 hosted 日志证明，不能声称可从保留字节独立重放该早期时点。该结果仍是云端 synthetic fixtures/隔离 probe，不是候选安装或真实用户库验收。
 
 这里请求的分配尺寸等于逻辑读取尺寸，不代表 malloc 的物理尺寸无取整，也不保证 Foundation 永不复制。没有通过 `withUnsafeBytes` 指针调用 `malloc_size` 写永久断言：该 API 提供连续视图，不是通用的 malloc 所有者起点合同。实际分配大小、后续 Data mutation 的复制成本与整 App 收益仍须精确 SHA 云端诊断和非插桩配对，不能由删除预填充或预留代码直接推算。
 
@@ -89,6 +97,14 @@
 后续 harness 增加可选 `exact-64k-spread-v1` 抽样，默认仍为 `data-string-float-v1`。新 profile 从捕获输出中的完整正地址记录去重，仅取恰好 65,536 B 的候选，按数值地址排序，在至多四个均匀 rank（含端点）采栈；没有其它尺寸补位，也不按 MeCab、Data、malloc 等推测标签筛选。元数据保留原始 label、候选池条数、零基 rank、profile 和缺失角色，request、summary 与 collector 记录同一 profile。地址分布可能与 allocator zone/owner 聚集相关，四个 rank 既不是随机样本也不能保证命中页存储；heap 超时或截断时，池与 rank 只描述保留的完整前缀。只有实际栈映射到精确产品的 `rawRead` 分配行，才形成该采样地址的分配站点证据。四地址、时间/字节上限、PARTIAL 与非性能资格保持原合同；新 profile 尚无云端采集结果。
 
 两份 stdlib harness 测试现为 76 项，本地全部通过；其中 allocation 模块 45 项，覆盖 0/1/2/3/4/5/10 个候选的固定 rank、数值排序、重复/不完整/零地址、保留推测 label、无异尺寸补位、截断 PARTIAL、预先退出、CLI 拒绝未知 profile，以及 CLI→callback→summary 的 profile 和非性能资格。YAML、全部 run shell block 的 `bash -n` 及 diff 检查通过。没有为这些轻量检查执行本地产品构建或启动 App。
+
+该抽样 harness 已推送为 `975bccf546be02ea2dcbc30e33c94f0eb3580c0f`，诊断 `46076363363` 固定产品 `750449be49627722a86e2ce9b21c9f9cac55997b`、profile `exact-64k-spread-v1`，尚待原始产物审计；receipt 为 `/tmp/tokenbar-dispatch-750449be-allocation-exact64k.json`。harness 的 `[skip ci]` 提交没有触发新的产品配对或原生回归，显式 workflow_dispatch 单独执行诊断。
+
+进一步的可选 `allocation_class_summary` 只改变诊断 harness：原地址筛选仅打印至少 64 KiB 的块，无法归属剩余小分配的聚合。启用后，先完成原 heap 地址与最多四个 history，再以 `/usr/bin/heap -s --noContent PID` 收集全类别汇总，最多 60 秒/8 MiB，并使用原 120 秒总 deadline 的剩余时间作为超时上限；helper 清理仍保留既有有限 wait 宽限。退出或预算耗尽则跳过，失败/超时/截断保留已取得的栈与 PARTIAL。默认关闭，不增加 history 或地址数量。Apple 的本机 heap(1) 文档说明，插桩时部分 non-object 类型名由 allocation backtrace 推导；类别汇总仍不证明 retaining ownership、泄漏或可回收 footprint。该可选汇总尚未获得云端结果，不属于 `46076363363` 的固定 harness。
+
+增加该可选汇总后，两份 stdlib harness 测试共 80 项全部通过，allocation 模块为 49 项。新增回归覆盖默认关闭、两种 profile 与 flag 的端到端传递、原 deadline 剩余 20 秒时的超时夹紧、命令/环境/产物哈希、summary 超时/截断/非零退出时保留有效栈、无栈不因 summary 成功而误报，以及 App 退出或 deadline 用尽时不再查询。YAML/全部 shell block/diff 轻量检查通过，没有本地 native 构建或 App 启动。
+
+allocation 并发组另包含 selection profile 与 classes/addresses 标识，分别隔离不同诊断请求，避免它们在 pending 状态相互替代；产品 SHA/ref 后缀、`cancel-in-progress:false` 及原 pair 并发组保持。该分组只调度独立 runner，不改变采样、预算或诊断的非性能资格。
 
 ## 精确 3256e3f0 云端结果（2026-11-28）
 

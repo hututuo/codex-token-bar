@@ -394,6 +394,7 @@ class AllocationCollectorTests(unittest.TestCase):
             self.assertIn(fragment, evidence["selectionStrategy"])
         self.assertIsInstance(evidence["missingSelectionRoles"], list)
         self.assertEqual(evidence["missingSelectionRoles"], missing_roles)
+        self.assertFalse(evidence["classSummaryRequested"])
         self.assertNotIn("bucketObserved", evidence)
 
     def capture_plan(self, specifications):
@@ -429,7 +430,7 @@ class AllocationCollectorTests(unittest.TestCase):
         env = {"HOME": "/synthetic-home", "PATH": "/usr/bin:/bin"}
         before = dict(env)
         with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
-            evidence = alloc.collect_allocations(process, Path(tmp), env)
+            evidence = alloc.collect_allocations(process, Path(tmp), env, class_summary=False)
             self.assertEqual(evidence["status"], "COLLECTED")
             self.assertTrue(evidence["outsideMeasurement"])
             self.assertEqual(len(evidence["tools"]), 5)
@@ -444,6 +445,7 @@ class AllocationCollectorTests(unittest.TestCase):
                 "seconds": 120, "heapBytes": 8 * 1024 * 1024, "heapSeconds": 60,
                 "historyBytesPerAddress": 64 * 1024, "historySecondsPerAddress": 10,
             })
+            self.assertNotIn("classSummary", evidence)
             saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
             self.assertEqual(saved["limits"], evidence["limits"])
             self.assert_selection_metadata(saved, list(alloc.SELECTION_ROLES))
@@ -584,6 +586,131 @@ class AllocationCollectorTests(unittest.TestCase):
             self.assertEqual(record["missingSelectionRoles"],
                              [f"exact-64k-spread-{index}" for index in range(1, 5)])
         capture.assert_not_called()
+
+    def test_requested_class_summary_uses_clean_environment_original_deadline_and_bounded_output(self):
+        heap = "".join(f"0x{index:x}: observed-label-{index} (65536 bytes)\n"
+                       for index in range(1, 5)).encode()
+        history = ("1 call for 65536 bytes:\n" + self.FRAME).encode()
+        summary_payload = b"All zones: synthetic class summary\n"
+        for elapsed_before_summary, expected_timeout in ((0.0, 60.0), (100.0, 20.0)):
+            with self.subTest(elapsed_before_summary=elapsed_before_summary):
+                captures, capture = self.capture_plan([{"payload": heap}] + [{"payload": history}] * 4
+                                                     + [{"payload": summary_payload}])
+                clock = SimpleNamespace(now=0.0)
+
+                def advance_capture(*args, **kwargs):
+                    record = capture(*args, **kwargs)
+                    if len(captures) == 5:
+                        clock.now = elapsed_before_summary
+                    return record
+
+                process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+                env = {"PATH": "/usr/bin:/bin", "ALLOCATION_TEST_VALUE": "synthetic"}
+                with tempfile.TemporaryDirectory() as tmp, \
+                        patch.object(alloc.time, "monotonic", side_effect=lambda: clock.now), \
+                        patch.object(alloc, "bounded_capture", side_effect=advance_capture):
+                    evidence = alloc.collect_allocations(process, Path(tmp), env,
+                                                         profile=alloc.EXACT_64K_PROFILE, class_summary=True)
+                    saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+                    self.assertEqual((Path(tmp) / "allocation-heap-summary.txt").read_bytes(), summary_payload)
+                    self.assertEqual(captures[-1]["destination"], Path(tmp) / "allocation-heap-summary.txt")
+                self.assertEqual(len(captures), 6)
+                self.assertEqual([entry["argv"][0] for entry in captures],
+                                 ["/usr/bin/heap"] + ["/usr/bin/malloc_history"] * 4 + ["/usr/bin/heap"])
+                self.assertEqual(captures[-1]["argv"], ["/usr/bin/heap", "-s", "--noContent", "4321"])
+                self.assertEqual(captures[-1]["timeout"], expected_timeout)
+                self.assertEqual(captures[-1]["max_bytes"], 8 * 1024 * 1024)
+                self.assertTrue(all(captured["env"] is env for captured in captures))
+                for record in (evidence, saved):
+                    self.assertTrue(record["classSummaryRequested"])
+                    self.assertEqual(record["status"], "COLLECTED")
+                    self.assertEqual(record["recordedStackAddresses"], 4)
+                    self.assertEqual(len(record["allocations"]), 4)
+                    self.assertEqual(record["limits"], {
+                        "seconds": 120, "heapBytes": 8 * 1024 * 1024, "heapSeconds": 60,
+                        "historyBytesPerAddress": 64 * 1024, "historySecondsPerAddress": 10,
+                        "classSummarySeconds": 60, "classSummaryBytes": 8 * 1024 * 1024,
+                    })
+                    self.assertEqual([tool["tool"] for tool in record["tools"]],
+                                     ["heap"] + ["malloc_history"] * 4 + ["heap-summary"])
+                    self.assertEqual(record["classSummary"], record["tools"][-1])
+                    self.assertEqual(record["classSummary"]["bytes"], len(summary_payload))
+                    self.assertEqual(record["classSummary"]["sha256"], hashlib.sha256(summary_payload).hexdigest())
+                    self.assertEqual(record["classSummary"]["file"], "allocation-heap-summary.txt")
+                self.assertEqual(env, {"PATH": "/usr/bin:/bin", "ALLOCATION_TEST_VALUE": "synthetic"})
+
+    def test_class_summary_tool_outcomes_preserve_stacks_and_never_imply_success_without_stacks(self):
+        outcomes = [
+            ("timeout", {"returnCode": -9, "timedOut": True}, "UNAVAILABLE", "PARTIAL"),
+            ("byte cap", {"returnCode": -9, "truncated": True}, "UNAVAILABLE", "PARTIAL"),
+            ("nonzero exit", {"returnCode": 7}, "UNAVAILABLE", "PARTIAL"),
+            ("killed without a cap flag", {"returnCode": -9}, "UNAVAILABLE", "PARTIAL"),
+            ("successful summary", {"returnCode": 0}, "COLLECTED", "COLLECTED"),
+        ]
+        heap = b"0x10: observed label (65536 bytes)\n"
+        for has_stack in (True, False):
+            history = ("1 call for 65536 bytes:\n" + self.FRAME).encode() if has_stack else b"No stack logging data\n"
+            for label, outcome, summary_status, status_with_stacks in outcomes:
+                with self.subTest(summary_outcome=label, has_stack=has_stack):
+                    captures, capture = self.capture_plan([
+                        {"payload": heap}, {"payload": history},
+                        {"payload": b"retained summary prefix\n", **outcome},
+                    ])
+                    process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+                    with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+                        evidence = alloc.collect_allocations(process, Path(tmp), {},
+                                                             profile=alloc.EXACT_64K_PROFILE, class_summary=True)
+                        saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+                    self.assertEqual(len(captures), 3)
+                    for record in (evidence, saved):
+                        self.assertEqual(record["status"], status_with_stacks if has_stack else "UNAVAILABLE")
+                        self.assertEqual(record["recordedStackAddresses"], int(has_stack))
+                        self.assertEqual(len(record["allocations"]), 1)
+                        self.assertEqual(record["allocations"][0]["status"], "COLLECTED" if has_stack else "UNAVAILABLE")
+                        self.assertEqual(record["classSummary"]["status"], summary_status)
+                        self.assertEqual(record["classSummary"]["returnCode"], outcome["returnCode"])
+                        self.assertEqual(record["classSummary"], record["tools"][-1])
+                        if has_stack:
+                            self.assertTrue(any(self.FRAME.strip() in line for group in record["allocations"][0]["groups"]
+                                                for line in group["frameLines"]))
+
+    def test_class_summary_skips_queries_after_child_exit_or_exhausted_original_deadline(self):
+        cases = [("child already exited", 0, False), ("child exits after history", 2, True),
+                 ("deadline after heap", 1, False), ("deadline after history", 2, True)]
+        heap = b"0x10: observed label (65536 bytes)\n"
+        history = ("1 call for 65536 bytes:\n" + self.FRAME).encode()
+        for label, expected_queries, has_stack in cases:
+            with self.subTest(case=label):
+                captures, capture = self.capture_plan([{"payload": heap}, {"payload": history}])
+                clock = SimpleNamespace(now=0.0)
+
+                def advance_capture(*args, **kwargs):
+                    record = capture(*args, **kwargs)
+                    if label.startswith("deadline") and len(captures) == expected_queries:
+                        clock.now = 120.0
+                    return record
+
+                def poll():
+                    if label == "child already exited" or (label == "child exits after history" and len(captures) >= 2):
+                        return 0
+                    return None
+
+                process = SimpleNamespace(pid=4321, poll=Mock(side_effect=poll))
+                with tempfile.TemporaryDirectory() as tmp, \
+                        patch.object(alloc.time, "monotonic", side_effect=lambda: clock.now), \
+                        patch.object(alloc, "bounded_capture", side_effect=advance_capture):
+                    evidence = alloc.collect_allocations(process, Path(tmp), {},
+                                                         profile=alloc.EXACT_64K_PROFILE, class_summary=True)
+                    saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+                self.assertEqual(len(captures), expected_queries)
+                for record in (evidence, saved):
+                    self.assertTrue(record["classSummaryRequested"])
+                    self.assertEqual(record["status"], "PARTIAL" if has_stack else "UNAVAILABLE")
+                    self.assertEqual(record["classSummary"]["status"], "SKIPPED")
+                    self.assertTrue(record["classSummary"]["reason"])
+                    self.assertNotIn("heap-summary", [tool["tool"] for tool in record["tools"]])
+                self.assertTrue(all("--addresses=" + alloc.HEAP_PATTERN in captured["argv"]
+                                    or captured["argv"][0] == "/usr/bin/malloc_history" for captured in captures))
 
     def test_heap_denial_never_qualifies_as_a_collected_stack(self):
         captures, capture = self.capture_plan([{"payload": b"permission denied\n", "returnCode": 1}])
@@ -774,6 +901,7 @@ class AllocationSafetyTests(unittest.TestCase):
         args = alloc.parse_arguments(["--candidate-app", "/synthetic/candidate.app", "--output-dir", "/synthetic/evidence"])
         self.assertEqual(args.candidate_app, Path("/synthetic/candidate.app"))
         self.assertEqual(args.selection_profile, "data-string-float-v1")
+        self.assertFalse(args.class_summary)
         self.assertEqual((args.responses, args.trials, args.warmup, args.duration), ([20000], 1, 120, 120))
         self.assertFalse(args.retained_graph)
         self.assertFalse(hasattr(args, "baseline_app"))
@@ -782,6 +910,15 @@ class AllocationSafetyTests(unittest.TestCase):
         args = alloc.parse_arguments(["--candidate-app", "/synthetic/candidate.app", "--output-dir", "/synthetic/evidence",
                                       "--selection-profile", "exact-64k-spread-v1"])
         self.assertEqual(args.selection_profile, alloc.EXACT_64K_PROFILE)
+        self.assertFalse(args.class_summary)
+        self.assertEqual((args.responses, args.trials, args.warmup, args.duration), ([20000], 1, 120, 120))
+        self.assertFalse(args.retained_graph)
+
+    def test_cli_accepts_optional_class_summary_with_the_original_workload_and_default_profile(self):
+        args = alloc.parse_arguments(["--candidate-app", "/synthetic/candidate.app", "--output-dir", "/synthetic/evidence",
+                                      "--class-summary"])
+        self.assertTrue(args.class_summary)
+        self.assertEqual(args.selection_profile, "data-string-float-v1")
         self.assertEqual((args.responses, args.trials, args.warmup, args.duration), ([20000], 1, 120, 120))
         self.assertFalse(args.retained_graph)
 
@@ -797,15 +934,17 @@ class AllocationSafetyTests(unittest.TestCase):
         cdll.assert_not_called()
 
     def test_main_binds_requested_profile_into_the_callback_and_saved_summary(self):
-        for profile in ("data-string-float-v1", "exact-64k-spread-v1"):
-            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as tmp:
+        cases = [(profile, class_summary) for profile in ("data-string-float-v1", "exact-64k-spread-v1")
+                 for class_summary in (False, True)]
+        for profile, class_summary in cases:
+            with self.subTest(profile=profile, class_summary=class_summary), tempfile.TemporaryDirectory() as tmp:
                 home, runner = Path(tmp) / "home", Path(tmp) / "runner"
                 home.mkdir()
                 runner.mkdir()
                 output = runner / "evidence"
                 process = SimpleNamespace(pid=4321)
                 environment = {"PATH": "/usr/bin:/bin", "ALLOCATION_TEST_VALUE": "synthetic"}
-                diagnostic = {"status": "COLLECTED", "selectionProfile": profile}
+                diagnostic = {"status": "COLLECTED", "selectionProfile": profile, "classSummaryRequested": class_summary}
                 display = Mock(record={"synthetic": True})
                 noon = alloc.dt.datetime.combine(alloc.dt.date.today(), alloc.dt.time(12)).timestamp()
                 callback_arguments = (process, output / "synthetic-trial", environment)
@@ -835,17 +974,23 @@ class AllocationSafetyTests(unittest.TestCase):
                     popen = stack.enter_context(patch.object(subprocess, "Popen"))
                     run = stack.enter_context(patch.object(subprocess, "run"))
                     cdll = stack.enter_context(patch.object(ctypes, "CDLL"))
-                    status = alloc.main(["--candidate-app", "/synthetic/candidate.app", "--output-dir", str(output),
-                                         "--selection-profile", profile])
+                    arguments = ["--candidate-app", "/synthetic/candidate.app", "--output-dir", str(output),
+                                 "--selection-profile", profile]
+                    status = alloc.main(arguments + (["--class-summary"] if class_summary else []))
                 self.assertEqual(status, 0)
                 collector.assert_called_once()
                 self.assertEqual(collector.call_args.args[:3], callback_arguments)
                 forwarded_profile = (collector.call_args.args[3] if len(collector.call_args.args) > 3
                                      else collector.call_args.kwargs.get("profile"))
                 self.assertEqual(forwarded_profile, profile)
+                forwarded_class_summary = (collector.call_args.args[4] if len(collector.call_args.args) > 4
+                                           else collector.call_args.kwargs.get("class_summary"))
+                self.assertIs(forwarded_class_summary, class_summary)
                 summary = json.loads((output / "summary.json").read_text())
                 self.assertEqual(summary["selectionProfile"], profile)
+                self.assertIs(summary["classSummaryRequested"], class_summary)
                 self.assertEqual(summary["results"][0]["postMeasurementMemoryDiagnostics"]["selectionProfile"], profile)
+                self.assertIs(summary["results"][0]["postMeasurementMemoryDiagnostics"]["classSummaryRequested"], class_summary)
                 self.assertFalse(summary["performanceComparable"])
                 self.assertFalse(summary["metricsEligibleForHalvingAcceptance"])
                 self.assertEqual(summary["performanceVerdict"], "NOT_EVALUATED")
