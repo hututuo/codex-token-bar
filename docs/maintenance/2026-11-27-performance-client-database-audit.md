@@ -1,6 +1,8 @@
 # 性能、多客户端与数据库兼容性验收
 
-更新日期：2026-11-27（Asia/Shanghai）。最近完整 CI 成功源码为 `9e350c92b1e0183eb4a6907ca0570a46a029e308`（run `45933441364`）；最近整 App 配对仍是 `f59bc14f25c3d27c722abd4c12f2f987341a29fc`（run `45921100543`，harness `fcddaf1bbba1e94576fd04c3531a99f3151c2f68`）。20k workload 的 CPU、RSS、physical footprint 分别下降 42.33%、7.81%、6.76%，均未减半。当前续查工作树以 `b152cfe300a13b0072a922d09a48a7c693ab6f8b` 为 HEAD，包含未提交候选改动；该候选尚未云端编译、全量回归或配对测量。三个目标继续保持 active。
+当前入口（2026-11-28，Asia/Shanghai）：精确 `3256e3f051ba35a463de5945d9b4faf08e0f2cc6` 已完成 hosted CI `46055591655`、公开 v0.9.7 升级 `46055591754`、四版本×双平台 formed 矩阵 `46057708579`，均成功；资源 `46055679102` 的 Rust aggregate 和整 App 配对均完成。20k 三对 CPU 比值的中位数下降 54.10%，RSS 下降 8.27%，physical footprint 下降 7.44%；2k CPU 下降 24.72%。内存减半目标仍未完成，继续单独采集分配栈归属证据。完整计数、原始 artifact 目录与安装验收边界见 [2026-11-28 兼容性续查](2026-11-28-compatibility-followup.md)。
+
+下文保留 2026-11-27 历史验收时点，表内“最新/当前/待验证”均描述当时状态，不能代替上述续查结果。该时点最近完整 CI 成功源码为 `9e350c92b1e0183eb4a6907ca0570a46a029e308`（run `45933441364`）；整 App 配对为 `f59bc14f25c3d27c722abd4c12f2f987341a29fc`（run `45921100543`，harness `fcddaf1bbba1e94576fd04c3531a99f3151c2f68`）。20k workload 的 CPU、RSS、physical footprint 分别下降 42.33%、7.81%、6.76%，均未减半；工作树当时以 `b152cfe300a13b0072a922d09a48a7c693ab6f8b` 为 HEAD，包含未提交候选改动。
 
 ## 验收状态
 

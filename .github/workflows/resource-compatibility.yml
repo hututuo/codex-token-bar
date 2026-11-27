@@ -32,6 +32,10 @@ on:
         description: 'Collect a no-content reference tree after each whole-app measurement'
         type: boolean
         default: false
+      allocation_diagnostic:
+        description: 'Only collect candidate allocation stacks; never a performance comparison'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +54,7 @@ env:
 
 jobs:
   ledger-pair:
+    if: ${{ !inputs.allocation_diagnostic }}
     runs-on: macos-26
     timeout-minutes: 100
     env:
@@ -103,7 +108,7 @@ jobs:
   whole-app-pair:
     # A branch push can repair only the aggregate harness while an exact-source
     # whole-app pair is already sampling. Dispatches use the explicit input.
-    if: ${{ !inputs.aggregate_only && !contains(github.event.head_commit.message, '[aggregate-only]') }}
+    if: ${{ !inputs.allocation_diagnostic && !inputs.aggregate_only && !contains(github.event.head_commit.message, '[aggregate-only]') }}
     runs-on: macos-26
     timeout-minutes: 100
     env:
@@ -185,5 +190,99 @@ jobs:
           path: |
             whole-app-build-evidence/
             whole-app-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  allocation-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.allocation_diagnostic }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: harness
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+          path: candidate
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            candidate/.build/artifacts
+            candidate/.build/checkouts
+            candidate/.build/repositories
+          key: whole-app-swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('candidate/Package.resolved') }}-v1
+      - name: Record exact diagnostic identities before building
+        run: |
+          set -euo pipefail
+          mkdir allocation-build-evidence
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git -C candidate rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          [[ "$(git -C harness rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          git -C candidate diff --exit-code
+          git -C harness diff --exit-code
+          python3 - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          head = lambda root: subprocess.check_output(['git','-C',root,'rev-parse','HEAD'],text=True).strip()
+          record = {
+            'purpose':'allocation-diagnostic', 'performanceComparable':False,
+            'performanceVerdict':'NOT_EVALUATED', 'productSourceSha':os.environ['SOURCE_SHA'],
+            'actualProductHead':head('candidate'), 'harnessSha':os.environ['GITHUB_SHA'],
+            'actualHarnessHead':head('harness'), 'runId':os.environ['GITHUB_RUN_ID'],
+            'runAttempt':os.environ['GITHUB_RUN_ATTEMPT'], 'buildConfiguration':'release',
+            'ref':os.environ['GITHUB_REF'], 'event':os.environ['GITHUB_EVENT_NAME'],
+            'runnerOS':os.environ['RUNNER_OS'], 'runnerArch':os.environ['RUNNER_ARCH'],
+            'releaseFlags':{'CODE_SIGN_IDENTITY':'-','ENABLE_HARDENED_RUNTIME':'0','ENABLE_APP_SANDBOX':'0','APP_BUILD':'1062'},
+            'harnessFiles':{name:hashlib.sha256(Path('harness/scripts/cloud',name).read_bytes()).hexdigest()
+                            for name in ('whole_app_benchmark.py','whole_app_allocations.py')}
+          }
+          Path('allocation-build-evidence/request.json').write_text(json.dumps(record,indent=2)+'\n')
+          PY
+      - name: Validate harness and build one exact release candidate
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s harness/scripts/cloud -p 'test_whole_app*.py'
+          command -v git-lfs >/dev/null || brew install git-lfs
+          sw_vers > allocation-build-evidence/toolchain.txt
+          swift --version >> allocation-build-evidence/toolchain.txt
+          xcodebuild -version >> allocation-build-evidence/toolchain.txt
+          (
+            cd candidate
+            python3 scripts/agent_speed_vendor.py check
+            CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=0 ENABLE_APP_SANDBOX=0 \
+              APP_BUILD=1062 APP_OUTPUT_DIR="$GITHUB_WORKSPACE/candidate-allocation.app" \
+              bash scripts/package_app.sh release 2>&1 | tee ../allocation-build-evidence/candidate-build.log
+            git diff --exit-code
+          )
+          python3 - <<'PY'
+          import hashlib,json,plistlib
+          from pathlib import Path
+          root=Path('candidate-allocation.app/Contents')
+          info=(root/'Info.plist').read_bytes()
+          executable=(root/'MacOS'/plistlib.loads(info)['CFBundleExecutable']).read_bytes()
+          record=json.loads(Path('allocation-build-evidence/request.json').read_text())
+          record.update(executableSha256=hashlib.sha256(executable).hexdigest(),infoPlistSha256=hashlib.sha256(info).hexdigest())
+          Path('allocation-build-evidence/CodexTokenBar').write_bytes(executable)
+          Path('allocation-build-evidence/Info.plist').write_bytes(info)
+          Path('allocation-build-evidence/provenance.json').write_text(json.dumps(record,indent=2)+'\n')
+          PY
+      - name: Collect bounded candidate allocation stacks
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/cloud/whole_app_allocations.py \
+            --candidate-app "$GITHUB_WORKSPACE/candidate-allocation.app" \
+            --output-dir "$GITHUB_WORKSPACE/allocation-evidence"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: allocation-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            allocation-build-evidence/
+            allocation-evidence/
           if-no-files-found: error
           retention-days: 30

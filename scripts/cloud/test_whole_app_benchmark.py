@@ -432,6 +432,74 @@ class WholeAppHarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(bench.BenchError, "sourceSha256"):
             bench.paired_summary([a, b])
 
+    def test_pair_rejects_diagnostic_or_instrumented_results_before_comparing_metrics(self):
+        for marker in ({"purpose": "allocation-diagnostic"}, {"performanceComparable": False},
+                       {"instrumentation": {"MallocStackLogging": "1"}}):
+            with self.subTest(marker=marker), self.assertRaisesRegex(bench.BenchError, "diagnostic trials"):
+                bench.paired_summary([marker])
+
+    def test_instrumented_trial_launch_isolated_from_helpers_and_capture_after_last_sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app, home, output, fixture_root = [root / name for name in ("source.app", "home", "out", "fixture")]
+            app.mkdir()
+            home.mkdir()
+            output.mkdir()
+            fixture = bench.generate_fixture(fixture_root, 20, 1800000000)
+            geometry = {"frame": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                        "visible": {"x": 0, "y": 48, "width": 1920, "height": 1007}}
+            display = SimpleNamespace(frame_seed=bench.dashboard_frame_seed(geometry), record={"after": geometry})
+            seed = bench.preference_seed(fixture_root, dashboard_frame=display.frame_seed)
+            visible = [{"x": 340, "y": 122, **bench.DASHBOARD_WINDOW}]
+            process = Mock(pid=123, returncode=-15)
+            process.poll.return_value = None
+            process.wait.return_value = -15
+            rows = [{"monotonicNS": i * 1000000000, "cpuNS": i * 1000,
+                     "rssBytes": 10, "footprintBytes": 20, "lifetimePeakFootprintBytes": 30} for i in range(3)]
+            sampler = Mock(side_effect=rows)
+            env = {"HOME": str(home)}
+            app_env = dict(env, MallocStackLogging="1")
+            run = output / "20-1-candidate"
+
+            def capture(child, directory, helper_env):
+                self.assertIs(child, process)
+                self.assertEqual(directory, run)
+                self.assertIs(helper_env, env)
+                self.assertEqual(sampler.call_count, 3)
+                self.assertEqual(len((run / "metrics.jsonl").read_text().splitlines()), 3)
+                return {"status": "COLLECTED", "startedMonotonicNS": 3000000000}
+
+            with patch.object(bench, "product_processes", return_value=[]), \
+                    patch.object(bench, "export_defaults", side_effect=[None, seed]), \
+                    patch.object(bench, "command") as command, \
+                    patch.object(bench, "bundle_manifest", return_value={"executable": "CodexTokenBar"}), \
+                    patch.object(bench.subprocess, "Popen", return_value=process) as launch, \
+                    patch.object(bench, "ProcessSampler", return_value=SimpleNamespace(sample=sampler)), \
+                    patch.object(bench, "startup_ready", return_value={"ready": True}), \
+                    patch.object(bench, "ledger_truth", return_value={"complete": True}), \
+                    patch.object(bench, "archive_state", return_value={"archived": True}), \
+                    patch.object(bench.time, "sleep"), \
+                    patch.object(bench.time, "monotonic", side_effect=range(30)):
+                result = bench.run_trial("candidate", 1, app, root / "runtime.app", home, fixture_root,
+                                         fixture, env, SimpleNamespace(startup_timeout=300, warmup=0, duration=1),
+                                         output, SimpleNamespace(windows=lambda _: visible), display,
+                                         app_env=app_env, post_sample=capture, purpose="allocation-diagnostic")
+            self.assertIs(launch.call_args.kwargs["env"], app_env)
+            self.assertIs(command.call_args.kwargs["env"], env)
+            self.assertNotIn("MallocStackLogging", env)
+            self.assertEqual(sampler.call_count, 3)
+            self.assertLess(result["measurementEndedMonotonicNS"],
+                            result["postMeasurementMemoryDiagnostics"]["startedMonotonicNS"])
+            self.assertFalse(result["performanceComparable"])
+            self.assertEqual(result["performanceVerdict"], "NOT_EVALUATED")
+            self.assertEqual(result["instrumentation"], {"MallocStackLogging": "1"})
+            self.assertEqual(len((run / "metrics.jsonl").read_text().splitlines()), 3)
+
+    def test_logging_cannot_be_enabled_in_a_normal_acceptance_trial(self):
+        with self.assertRaisesRegex(bench.BenchError, "resource acceptance"):
+            bench.run_trial(None, None, None, None, None, None, None, {}, None, None, None, None,
+                            app_env={"MallocStackLogging": "1"})
+
 
 if __name__ == "__main__":
     unittest.main()

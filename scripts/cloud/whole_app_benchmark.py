@@ -564,7 +564,13 @@ def post_measurement_memory_diagnostics(pid, destination, env, *, retained_graph
     return result
 
 
-def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, args, out, windows, display):
+def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, args, out, windows, display,
+              *, app_env=None, post_sample=None, purpose="resource-pair"):
+    require(purpose in ("resource-pair", "allocation-diagnostic"), "unknown trial purpose")
+    launch_env = env if app_env is None else app_env
+    instrumentation = {key: value for key, value in launch_env.items() if key.startswith("MallocStackLogging")}
+    require(purpose == "allocation-diagnostic" or not instrumentation,
+            "instrumented trials cannot be used for resource acceptance")
     run = out / f"{fixture['responses']}-{trial}-{role}"
     run.mkdir()
     require(not owned_paths(home) and export_defaults(env) is None,
@@ -582,6 +588,11 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
     info = bundle_manifest(runtime_app)
     executable = runtime_app / "Contents/MacOS" / info["executable"]
     result = {"role": role, "trial": trial, "responses": fixture["responses"], "status": "FAILED",
+              "purpose": purpose, "instrumentation": instrumentation,
+              "performanceComparable": purpose == "resource-pair",
+              "metricsEligibleForHalvingAcceptance": purpose == "resource-pair",
+              "performanceVerdict": "NOT_EVALUATED",
+              "statusScope": "diagnostic-execution" if purpose == "allocation-diagnostic" else "trial-execution",
               "bundle": info, "sameRuntimeAppPath": str(runtime_app), "supportSeed": "absent/empty",
               "settingsSeedSha256": digest(seed_bytes), "sourceSha256": fixture["source"]["sha256"],
               "viewportProtocol": VIEWPORT_PROTOCOL,
@@ -593,7 +604,7 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
     gate = None
     try:
         with (run / "app.stdout.log").open("wb") as stdout, (run / "app.stderr.log").open("wb") as stderr, (run / "metrics.jsonl").open("w") as metrics:
-            process = subprocess.Popen([str(executable)], cwd=runtime_app.parent, env=env,
+            process = subprocess.Popen([str(executable)], cwd=runtime_app.parent, env=launch_env,
                                        stdout=stdout, stderr=stderr, start_new_session=True)
             result["pid"] = process.pid
             sampler = ProcessSampler(process.pid)
@@ -648,8 +659,9 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
             # No sampler call or additional metrics row is allowed after this
             # boundary: native heap inspection is deliberately out of band.
             result["measurementEndedMonotonicNS"] = measured[-1]["monotonicNS"]
-            result["postMeasurementMemoryDiagnostics"] = post_measurement_memory_diagnostics(
-                process.pid, run, env, retained_graph=args.retained_graph)
+            result["postMeasurementMemoryDiagnostics"] = (
+                post_sample(process, run, env) if post_sample is not None else
+                post_measurement_memory_diagnostics(process.pid, run, env, retained_graph=args.retained_graph))
             result["status"] = "PASS"
     except (BenchError, OSError, ValueError, subprocess.SubprocessError) as error:
         result.update(status=getattr(error, "status", "FAILED"), reason=str(error))
@@ -699,6 +711,10 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
 
 
 def paired_summary(results):
+    require(all(row.get("purpose", "resource-pair") == "resource-pair"
+                and row.get("performanceComparable", True) is True
+                and not row.get("instrumentation") for row in results),
+            "instrumented or diagnostic trials cannot enter paired resource summary")
     pairs = []
     for count, trial in sorted({(row["responses"], row["trial"]) for row in results}):
         pair = {row["role"]: row for row in results if row["responses"] == count and row["trial"] == trial}

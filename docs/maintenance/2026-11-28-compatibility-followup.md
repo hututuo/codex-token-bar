@@ -24,6 +24,8 @@
 
 ## 已完成证据及边界
 
+本节保留历史时点记录；当前精确源码的完成状态以文末“精确 3256e3f0 云端结果”为准。
+
 - 精确 `6add665b4efde0965a30c493d886041690c6ef4f` 的公开 v0.9.7 升级 `46046493653` 双平台成功：macOS 8 项升级和 126 项支持回归；Windows 3 项 importer、生产恢复 probe 与 19 类 manifest 情景。原始输入哈希、精确来源及保全证明已复核。
 - 同 SHA 的 SpeedEngine 配对 `46046493657` 成功，35 项语义比较通过；四种 workload 的 CPU 中位数下降约 80.0%–94.6%。这是合成子系统测量，不是整 App 资源验收。
 - `995a4050f74cafb9143578c3c3c85ae951737b2c` 的整 App 配对 `46039953356` 完成 12 轮/6 对，原始资源样本独立复算与 summary 一致。20k 静态负载 CPU 秒 `0.218529252→0.121336336`（下降 44.48%）、RSS `231686144→213434368` B（下降 7.88%）、physical footprint `113134656→104369088` B（下降 7.75%），均未减半。只覆盖正式 App 主进程、固定可见 Dashboard、静态合成来源、每轮 120 秒暖机和 120 秒测量。
@@ -39,11 +41,29 @@
 - Swift 会话加载测试的 mock 原先仅轮询 1,000 次 `Task.yield()`，不能保证 MainActor 创建的工作已获调度。catalog/context 两类等待改为 actor 内注册事件，再通过带 10 秒超时的 `XCTWaiter.fulfillment` 等待；到达阈值时先移除 waiter 再 fulfill，超时后清理。
 - 自动发现多个 Claude 根已改为先物理去重并固定首个逻辑路径，再为各根分配全局剩余预算的公平份额，扣除实际消费并继续后根。Swift 只对 Claude 分配 entry 份额，分类预算与 importer 游标独立保留；Rust 同时分配 entry/file 份额，各根局部截断合并到总量，精确 E/F 项不再提前丢失。没有提高总上限。新增 Swift 4 项、Rust 5 项小 fixture，覆盖前根噪声、递归截断、未用预算回流、missing/alias、零预算及精确边界；跨平台用例加入 CI 必执行清单。原 incomplete 提示保留，目前仍无证据证明真实漏采批次触及此上限。
 
-以上续查修改已推送为 `f858ae03cbcbeec51d385b76921e0dc547af321c`，其公开升级 `46054347696` 与 CI `46054347941` 尚待完成，不能继承 `0007569e` 的通过结论。
+以上续查修改已推送为 `f858ae03cbcbeec51d385b76921e0dc547af321c`；其 CI `46054347941` 后续已成功，Swift `2658 / 0 / 38`、macOS native `1921 / 0 / 14`、Windows native `1862 / 0 / 15`，Windows IPC、packaging 与双平台负控通过。当前包含其修改的 `3256e3f0` 另有下述独立精确源码证据。
 
 ## 可见 Dashboard 的后台工作优化
 
 - 纯图标状态栏停止每秒 timer，并直接生成与旧空指标配置等价的空文字、固定辅助说明和恢复图标，省去 `TokenDisplaySnapshot`、radar 和指标计算。重新启用指标时立即刷新并恢复唯一 timer；同 owner 切换、owner 更换、重复 bind 和关闭的生命周期断言均覆盖，popover 的 lazy attach 和运行需求租约保持原路径。
 - Dashboard 按主页、热力图、最近图三个解析后的客户端范围决定是否申请外部 usage charts；只看 Codex 时释放原 consumer UUID 的图表需求。独立图表选择外部客户端、all、失效选择回退及 available 变化均按子视图同一个解析函数处理；其它窗口的 consumer 不受影响，消失后不会因设置变化重新申请。既有最后一个 consumer 关闭后清空、重新从 ledger 加载的回归加入必执行清单。
 
-新增两项范围策略测试和一项状态栏生命周期测试，均待新 SHA 云端编译/执行。当前只有源码审阅与轻量脚本证据，两项收益均未量化，不宣称资源已经减半；整 App 验收仍使用原固定可见 Dashboard、相同合成来源及采样时长。
+新增两项范围策略测试和一项状态栏生命周期测试已在精确 `3256e3f0` hosted CI 中执行通过；这些结果证明行为回归，不直接量化整 App 资源收益。整 App 验收仍使用原固定可见 Dashboard、相同合成来源及采样时长，资源是否减半单独看整 App 配对。
+
+## 精确 3256e3f0 云端结果（2026-11-28）
+
+以下结果均绑定完整源 SHA `3256e3f051ba35a463de5945d9b4faf08e0f2cc6`，不继承旧 SHA 的结论：
+
+- Hosted project checks `46055591655` 成功：Swift `2661 passed / 0 failed / 38 ignored`；macOS native `1921 / 0 / 14`；Windows native `1862 / 0 / 15`；Swift release contracts `112 passed / 1 skipped`；frontend、cloud scripts、Windows updater、macOS/Windows production recovery、backup-cleanup 负控、route-identity 负控及 Windows Claude helper IPC 均通过。两端 native execution 的 source SHA、`trackedDirty=false`、`untrackedInputs=[]` 已独立复核。IPC 与生产 probe 使用 disposable synthetic fixtures，不等于安装包或真实用户数据验收。证据目录：`/tmp/codex-token-bar-run-46055591655/`。
+- Public v0.9.7 upgrade `46055591754` 成功，Swift 8 项升级与 126 项 supporting regressions、Windows importer/production probe/19 类 manifest 情景均通过。producer/provenance 标记 `synthetic=true`，因此这是确定性 CI/夹具升级路径证据，不是已安装应用或真实用户库证明。独立复核目录：`/tmp/tokenbar-public097-review-46055591754-N1Mn3J/`。
+- Rust production aggregate `46055679102` 的 `ledger-pair` 成功：schema2 synthetic 输入 1200/12000、cold/cache-hit、3 trials，共 24 records/12 pairs；数据库完整性、seed hash、输入副本和语义比较均通过。冷路径 CPU 约下降 82.9%–84.1%，cache-hit 约下降 40.7%–52.0%；该 artifact 只有 Rust aggregate RSS/CPU，不含整 App physical footprint，不能替代资源配对。aggregate artifact 已保存在 `/tmp/codex-token-dashboard-run-46055679102/aggregate/`。
+- 形成历史版本矩阵 `46057708579` 成功，8/8 全通过：`0.9.8`、`0.9.9`、`0.9.10`、`0.9.11` × macOS/Windows。每格 candidate SHA 均为当前 SHA，committed/interrupted 各 resume 与三次独立 reopen 共 8 proofs 全通过，producer ZIP/manifest、source tree、recovery manifest 与 migration-state hash 均核对一致；各格 `cfgTest=false`，candidate 249 个 production files unchanged。证据目录：`/tmp/formed-run-46057708579/`。这仍是 Rust production probe，不替代 Swift 原生或已安装升级验收。
+- 当前整 App 资源配对 `46055679102` 的 `whole-app-pair` 成功，12 trials / 6 pairs。原始 metrics、20 个输入 JSONL 的字节/哈希、12 份 archived ledger 的稳定列/总量/摘要及 integrity、startup PID/session、固定可见窗口和测后诊断边界共 830 项独立核对全部通过。各档三对 candidate/baseline 比值的中位数：2k CPU `0.752773639`（下降 24.72%）、RSS `0.960858995`（下降 3.91%）、physical footprint `0.943649120`（下降 5.64%）；20k CPU `0.459023661`（下降 54.10%）、RSS `0.917332772`（下降 8.27%）、physical footprint `0.925623000`（下降 7.44%）。20k 三对 CPU 均减半，2k CPU 与所有 RSS/footprint 均未减半，整体性能目标未完成。仅覆盖正式 App 主进程、固定 1240×812 可见 Dashboard、静态 synthetic 来源、120 秒暖机及至少 120 秒测量。artifact 没有保存 executable 字节，只能核对构建与各轮记录的 executable hash 相等，不能独立重算缺失 binary。证据与可复算脚本：`/tmp/codex-token-dashboard-run-46055679102/whole-app/`、同父目录 `independent-audit.json`、`independent-audit.md`、`independent_audit.py`。
+
+## 内存归属诊断
+
+三轮 20k heap 快照均显示，ResponseRecord 字典原为 15,679,488 B，当前 ResponseStorage 对象与对应字典合计 6,593,536 B，减少 9,085,952 B；Double 数组约 2.884 MB 降至 16,016 B。剩余约 15.6–15.8 MB 的 non-object 与约 5.317 MB 的 malloc 组仍无确定的分配归属。后者在不同快照里出现 `__DataStorage._bytes`、`CodexSessionMutationMonitor.stream`、`NetworkAgent.NetworkAgentBackingClass.data._end` 等不同标签，不能把未插桩 heap 的字段推测标签当成具体 owner。vmmap 显示活分配减少和 allocator dirty fragmentation 增加同时存在，heap 字节差额不能替代 physical footprint。
+
+新增独立 `allocation_diagnostic` 云端入口，只构建指定 candidate，保留原 GUI/fixture/ledger 门槛，以同一 20k 合成输入运行一次。仅 App 子进程出生时启用 `MallocStackLogging=1`，辅助命令保持清洁环境；测量结束后查询至少 64 KiB 的有限地址，最多四个 malloc_history，采用两大块及 80/64 KiB 桶的抽样。采集总时限 30 秒，heap 输出最多 128 KiB，各 history 最多 64 KiB，保留原始输出、参数、时间、hash、截断和不可用状态。地址可能在选择后释放或复用，栈也不等于保留关系。新结果显式标记 `performanceComparable=false`、`performanceVerdict=NOT_EVALUATED`；配对汇总拒收插桩结果，所有资源观察均不能用于减半验收。构建 artifact 同时保存 executable 与 Info.plist 字节，便于独立重算 hash。该诊断未完成前，不据静态容量猜测删除产品状态。
+
+新账号隔离根的实现边界也已复核：自动发现覆盖默认根、existing guarded 根及 registry 中合规的 `accounts/<32-hex>/code/projects` 根；显式路径偏好仍保持单根独占。Swift/Rust 均先 canonical 去重，再在各根之间公平分配 entry/file 预算；cursor 只在已枚举候选文件中轮转，目录遍历本身每轮从头开始，超份额固定尾部可能持续遗漏，未用预算只流向后根而不回访已截断前根。Claude 分类另有单轮 64 MiB 上限，因此不能承诺后续刷新必然完整；触界必须保留 incomplete。缺失账号目录目前不会单独产生 incomplete 标记。没有证据表明真实批次触及这些预算边界。真实的 2,008 请求、263,914,258 输入 token 仍只属于 build1061/`05e059ba…` 的安装验收；在当前 SHA 安装并读取同一真实 ledger 前，不把它宣称为 3256e3f0 的实测修复。
