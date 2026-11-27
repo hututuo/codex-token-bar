@@ -18,6 +18,7 @@ public final class SharedSourceIO: @unchecked Sendable {
     }
     private struct PageKey: Hashable { let identity: Identity; let index: Int64 }
     private struct Page { let bytes: Data; var touched: UInt64 }
+    private struct PageRange { let bytes: Data; let range: Range<Int> }
     private struct Owner { let stamp: Stamp; var touched: UInt64 }
     private let lock = NSLock()
     private var pages: [PageKey:Page] = [:], owners: [Identity:Owner] = [:]
@@ -42,8 +43,52 @@ public final class SharedSourceIO: @unchecked Sendable {
     }
     public func read(descriptor: Int32, offset: Int64, count: Int, probe: Bool = false) throws -> Data {
         let probe = probe || (Thread.current.threadDictionary["TokenBar.SharedSourceIO.uncached"] as? Bool == true)
+        return try withValidatedRead(descriptor: descriptor, offset: offset, count: count, empty: Data()) { before, end in
+            if probe { return try rawRead(descriptor, offset: offset, count: Int(end - offset)) }
+            var output = Data()
+            output.reserveCapacity(Int(end - offset))
+            try visitPages(descriptor, stamp: before, offset: offset, end: end) { page, range in
+                output.append(page[range])
+            }
+            return output
+        }
+    }
+    /// POSIX-compatible entry point for upstream tailers. No parser changes.
+    public func pread(_ descriptor: Int32, into buffer: UnsafeMutableRawBufferPointer, offset: Int64, probe: Bool = false) -> Int {
+        do {
+            if probe || (Thread.current.threadDictionary["TokenBar.SharedSourceIO.uncached"] as? Bool == true) {
+                let data = try read(descriptor: descriptor, offset: offset, count: buffer.count, probe: true)
+                data.copyBytes(to: buffer.bindMemory(to: UInt8.self))
+                return data.count
+            }
+            let ranges = try withValidatedRead(descriptor: descriptor, offset: offset, count: buffer.count,
+                                               empty: [PageRange]()) { before, end in
+                var ranges: [PageRange] = []
+                ranges.reserveCapacity(Int((end - 1) / Int64(Self.pageBytes) - offset / Int64(Self.pageBytes) + 1))
+                try visitPages(descriptor, stamp: before, offset: offset, end: end) { page, range in
+                    ranges.append(PageRange(bytes: page, range: range))
+                }
+                return ranges
+            }
+            // Retained immutable pages survive cache eviction. Validate the complete
+            // read before touching the caller's buffer, as on the Data-returning path.
+            var written = 0
+            for slice in ranges {
+                slice.bytes.withUnsafeBytes { source in
+                    buffer.baseAddress!.advanced(by: written).copyMemory(
+                        from: source.baseAddress!.advanced(by: slice.range.lowerBound),
+                        byteCount: slice.range.count)
+                }
+                written += slice.range.count
+            }
+            return written
+        } catch let error as POSIXError { errno = error.code.rawValue; return -1 }
+        catch { errno = EIO; return -1 }
+    }
+    private func withValidatedRead<Value>(descriptor: Int32, offset: Int64, count: Int, empty: Value,
+                                          _ body: (Stamp, Int64) throws -> Value) throws -> Value {
         guard offset >= 0, count >= 0 else { throw POSIXError(.EINVAL) }
-        guard count > 0 else { return Data() }
+        guard count > 0 else { return empty }
         let first = try Self.stamp(descriptor)
         lock.lock(); defer { lock.unlock() }
         let before = try Self.stamp(descriptor)
@@ -52,49 +97,39 @@ public final class SharedSourceIO: @unchecked Sendable {
         if owners[before.identity]?.stamp != before { invalidate(before.identity) }
         owners[before.identity] = .init(stamp:before,touched:clock)
         while owners.count > ownerLimit, let oldest = owners.min(by: { $0.value.touched < $1.value.touched })?.key { invalidate(oldest) }
-        guard offset < before.size else { return Data() }
+        guard offset < before.size else { return empty }
         let end = offset + min(Int64(min(count,Self.maxRead)),before.size-offset)
-        var output = Data()
         do {
-            if probe {
-                output = try rawRead(descriptor,offset:offset,count:Int(end-offset))
-            } else {
-                output.reserveCapacity(Int(end-offset))
-                var position = offset
-                while position < end {
-                    let index = position / Int64(Self.pageBytes)
-                    let key = PageKey(identity:before.identity,index:index)
-                    let page: Data
-                    clock &+= 1
-                    if var cached = pages[key] {
-                        hits &+= 1; cached.touched = clock; pages[key] = cached; page = cached.bytes
-                    } else {
-                        let start = index * Int64(Self.pageBytes)
-                        page = try rawRead(descriptor,offset:start,count:Int(min(Int64(Self.pageBytes),before.size-start)))
-                        if page.count <= limit {
-                            pages[key] = .init(bytes:page,touched:clock); bytes += page.count
-                            while bytes > limit, let oldest = pages.min(by: { $0.value.touched < $1.value.touched })?.key {
-                                if let removed = pages.removeValue(forKey:oldest) { bytes -= removed.bytes.count }
-                            }
-                        }
-                    }
-                    let start = Int(position-index*Int64(Self.pageBytes))
-                    let length = min(page.count-start,Int(end-position))
-                    guard length > 0 else { throw POSIXError(.EAGAIN) }
-                    output.append(page[start..<(start+length)]); position += Int64(length)
-                }
-            }
+            let output = try body(before, end)
             guard try Self.stamp(descriptor) == before else { throw POSIXError(.EAGAIN) }
             return output
         } catch { invalidate(before.identity); throw error }
     }
-    /// POSIX-compatible entry point for upstream tailers. No parser changes.
-    public func pread(_ descriptor: Int32, into buffer: UnsafeMutableRawBufferPointer, offset: Int64, probe: Bool = false) -> Int {
-        do {
-            let data = try read(descriptor:descriptor,offset:offset,count:buffer.count,probe:probe)
-            data.copyBytes(to:buffer.bindMemory(to:UInt8.self)); return data.count
-        } catch let error as POSIXError { errno = error.code.rawValue; return -1 }
-        catch { errno = EIO; return -1 }
+    private func visitPages(_ descriptor: Int32, stamp before: Stamp, offset: Int64, end: Int64,
+                            _ visit: (Data, Range<Int>) -> Void) throws {
+        var position = offset
+        while position < end {
+            let index = position / Int64(Self.pageBytes)
+            let key = PageKey(identity:before.identity,index:index)
+            let page: Data
+            clock &+= 1
+            if var cached = pages[key] {
+                hits &+= 1; cached.touched = clock; pages[key] = cached; page = cached.bytes
+            } else {
+                let start = index * Int64(Self.pageBytes)
+                page = try rawRead(descriptor,offset:start,count:Int(min(Int64(Self.pageBytes),before.size-start)))
+                if page.count <= limit {
+                    pages[key] = .init(bytes:page,touched:clock); bytes += page.count
+                    while bytes > limit, let oldest = pages.min(by: { $0.value.touched < $1.value.touched })?.key {
+                        if let removed = pages.removeValue(forKey:oldest) { bytes -= removed.bytes.count }
+                    }
+                }
+            }
+            let start = Int(position-index*Int64(Self.pageBytes))
+            let length = min(page.count-start,Int(end-position))
+            guard length > 0 else { throw POSIXError(.EAGAIN) }
+            visit(page, start..<(start+length)); position += Int64(length)
+        }
     }
     private func rawRead(_ descriptor: Int32, offset: Int64, count: Int) throws -> Data {
         var result = Data(count:count), read = 0

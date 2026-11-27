@@ -58,6 +58,14 @@
 
 其中公开 0.9.7 升级已双平台成功，10 类独立审计全部通过：macOS 8 项升级及 126 项支持回归无失败或跳过，Windows 3 项 importer、非 cfg(test) 四阶段恢复 probe、19 类 manifest / 23 条报告通过；两份原始 ZIP 的 SHA-256 与 GitHub digest 一致，32 条 immutableFiles 哈希、最终 A/B 数据与重复启动导出均逐项复核。审计前后 862 个原始文件的字节哈希不变。证据在 `/tmp/tokenbar-public097-run-46070454998/`，简明报告为 `AUDIT.md`。这些都是 synthetic fixtures 与隔离 production-code probe，不能替代安装或真实用户库验收；其余运行的最终结果仍待审计。
 
+完整 CI `46070455053` 已运行成功，执行封条、实际通过/跳过清单及 artifact 的最终独立审计继续进行。形成版本矩阵 `46070506166` 已完成并独立审计通过：8/8 格、64 份 production proof、963 项检查，16 份 producer ZIP 的 256 成员、8 份 artifact ZIP digest、每格 249 个 production Git blob、最终恢复材料与 SQLite migration-state 均一致，全部 `cfgTest=false`。证据在 `/tmp/tokenbar-formed-run-46070506166/`；这是 synthetic Rust production 升级路径，尚未安装当前候选。
+
+## SharedSourceIO 上游读取候选
+
+本提交优化缓存 `pread` 的重复分配：此前每次先将页拼入完整 `Data`，返回后再复制到调用方缓冲区；现在在原有锁和文件 generation 校验范围内保存不可变页/range，完成末次 stamp 校验后直接复制。最多持有 65 个页片段，即使本次读取中发生缓存逐出，片段也保留有效存储；所有读取或校验错误都在写 caller buffer 前返回。公共 `read` 的组装、物理探针、嵌套 uncached、4 MiB 单次上限、EOF、独立 descriptor offset 和缓存统计合同保持。此次没有根据 heap 类型猜测删除缓存或解析状态，也没有改变 `rawRead` 分配策略。
+
+新增五项公共 API 回归：跨页与尾页、逐出后的最大范围和 cap 后 sentinel、probe/嵌套 bypass、错误时 buffer 保全、零长度/EOF；错误用例先缓存第一页，再用同 inode 的只写 descriptor 读取跨页范围，验证前页命中而后页 `EBADF` 时整个 buffer 不变。五项既有 `read` 回归与五项新 `pread` 回归均加入 CI 必执行清单。独立静态审查无明确阻断；本地 execution-gate 15 项、workflow contract 9 项及 YAML/bash/diff 检查通过。原生编译、测试及新产品的资源收益仍待云端，不能把删除分配代码路径当作已经量化的 CPU/RSS/footprint 改善。
+
 ## 精确 3256e3f0 云端结果（2026-11-28）
 
 以下结果均绑定完整源 SHA `3256e3f051ba35a463de5945d9b4faf08e0f2cc6`，不继承旧 SHA 的结论：
@@ -87,6 +95,8 @@ artifact 原始 ZIP SHA-256 为 `344b2ba41abcf394a89c6b5e400b90019376ca4d9f919ed
 上述四块只占约 1.55 MiB。完整 heap 还列出 62 个 `__DataStorage._bytes (malloc)`、合计 6,127,616 B，尚无其栈。因此下一轮仅更换诊断抽样为 `data-string-float-v1`：同类型最大 Data、另一个恰好 98,304 B 的 Data、最大 String array、最大 Float array；目标缺失则从其余最大块补足，仍最多四个地址，逐条记录 selectionRole 与 missingSelectionRoles。不硬编码本轮地址，不把类型名当 owner。原始输出、时间/字节预算、截断/失败语义和性能资格不变；抽样策略已改变，不能称整个诊断协议不变。
 
 两份 stdlib harness 测试现为 67 项，全部通过，包含精确类型、独立地址去重、缺失角色补位和持久化元数据。对已有原始 heap 的轻量复算命中四个新角色；这只是选择器复算，不是新产品的诊断结果。workflow 的并发组另按 allocation/pair 分开，允许两个独立 runner 同时测量与诊断，保留各自精确 source/harness 和 artifact 标识。
+
+该 harness 已推送为 `ecefd40cd5f416c2046ddfc798f1fb460fc48b02`，新诊断 `46072357467` 于 2026-11-28 05:45:36 +0800 启动，产品固定 `8b1549495d9ca2cd972a0573552d389c6c1e8ad2`。当前 SharedSourceIO 工作树改动不属于该诊断产品；不把其结果当作 SharedSourceIO 候选的实测结果。
 
 只读源码复核另确认：`SharedSourceIO.shared.pages` 会长期保留最多 4,194,304 个逻辑字节的原始页，按 65,536 字节目标页读取，`Data` 实际 capacity 尚无直接证据；当前 fixture 的换行缓冲不需要跨块保存。Dashboard 已用 LazyVStack，侧栏详情与状态栏 popover 按需创建，默认 Codex 范围下外部 ranking projection 直接返回空，未发现适用于本份 fixture 的可安全删除大块状态。上述源码路径只提供待验证 owner，不能把 64×80 KiB 的全局 size 桶直接绑定到共享页缓存。
 

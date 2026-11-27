@@ -102,4 +102,169 @@ final class SharedSourceIOTests: XCTestCase {
         XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: chunk.count), chunk)
         XCTAssertEqual(broker.statistics.physicalReads, afterReload)
     }
+
+    func testPreadSharesCrossPageTailBytesWithoutMovingConsumerOffsets() throws {
+        let pageBytes = 64 * 1024
+        let sentinel: UInt8 = 0xd3
+        let input = Data((0..<(2 * pageBytes + 137)).map { UInt8($0 % 251) })
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try input.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = try FileHandle(forReadingFrom: url), second = try FileHandle(forReadingFrom: url)
+        defer { try? first.close(); try? second.close() }
+        try first.seek(toOffset: 37)
+        try second.seek(toOffset: 119)
+        let broker = SharedSourceIO()
+        var initial = [UInt8](repeating: sentinel, count: pageBytes + 100)
+        let initialOffset = pageBytes - 17
+        let initialCount = initial.withUnsafeMutableBytes {
+            broker.pread(first.fileDescriptor, into: $0, offset: Int64(initialOffset))
+        }
+        XCTAssertEqual(initialCount, initial.count)
+        XCTAssertEqual(Data(initial), input[initialOffset..<(initialOffset + initial.count)])
+        let cached = broker.statistics
+
+        let tailOffset = pageBytes + 31
+        let expectedCount = input.count - tailOffset
+        var tail = [UInt8](repeating: sentinel, count: pageBytes + 200)
+        let tailCount = tail.withUnsafeMutableBytes {
+            broker.pread(second.fileDescriptor, into: $0, offset: Int64(tailOffset))
+        }
+        XCTAssertEqual(tailCount, expectedCount)
+        XCTAssertEqual(Data(tail.prefix(expectedCount)), input[tailOffset..<input.count])
+        XCTAssertTrue(tail.dropFirst(expectedCount).allSatisfy { $0 == sentinel })
+        XCTAssertEqual(broker.statistics.physicalReads, cached.physicalReads)
+        XCTAssertGreaterThan(broker.statistics.cacheHits, cached.cacheHits)
+        XCTAssertEqual(try first.offset(), 37)
+        XCTAssertEqual(try second.offset(), 119)
+    }
+
+    func testPreadCopiesMaximumRangeAfterEvictionAndLeavesBytesBeyondCapUntouched() throws {
+        let maximum = 4 * 1024 * 1024
+        let pageBytes = 64 * 1024
+        let sentinel: UInt8 = 0xd3
+        let input = Data((0..<(maximum + pageBytes + 41)).map { UInt8($0 % 251) })
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try input.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let broker = SharedSourceIO(maxCacheBytes: pageBytes, maxOwners: 1)
+        let offset = 31
+        var buffer = [UInt8](repeating: sentinel, count: maximum + 257)
+        let count = buffer.withUnsafeMutableBytes {
+            broker.pread(reader.fileDescriptor, into: $0, offset: Int64(offset))
+        }
+        XCTAssertEqual(count, maximum)
+        XCTAssertEqual(Data(buffer.prefix(maximum)), input[offset..<(offset + maximum)])
+        XCTAssertTrue(buffer.dropFirst(maximum).allSatisfy { $0 == sentinel })
+        XCTAssertGreaterThan(broker.statistics.physicalReads, 1)
+        XCTAssertLessThanOrEqual(broker.statistics.cachedBytes, pageBytes)
+    }
+
+    func testPreadProbeAndNestedUncachedReadsBypassWarmPages() throws {
+        let pageBytes = 64 * 1024
+        let input = Data((0..<(2 * pageBytes + 17)).map { UInt8($0 % 251) })
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try input.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let broker = SharedSourceIO()
+        let offset = pageBytes - 7
+        func consume(probe: Bool = false) {
+            var buffer = [UInt8](repeating: 0xd3, count: 32)
+            let count = buffer.withUnsafeMutableBytes {
+                broker.pread(reader.fileDescriptor, into: $0, offset: Int64(offset), probe: probe)
+            }
+            XCTAssertEqual(count, buffer.count)
+            XCTAssertEqual(Data(buffer), input[offset..<(offset + buffer.count)])
+        }
+        func requirePhysicalRead(probe: Bool = false) {
+            let before = broker.statistics
+            consume(probe: probe)
+            XCTAssertGreaterThan(broker.statistics.physicalReads, before.physicalReads)
+            XCTAssertEqual(broker.statistics.cacheHits, before.cacheHits)
+        }
+        consume()
+        let cachedHits = broker.statistics.cacheHits
+        requirePhysicalRead(probe: true)
+        broker.withUncachedReads {
+            requirePhysicalRead()
+            broker.withUncachedReads { requirePhysicalRead() }
+            requirePhysicalRead()
+        }
+        let physicalReads = broker.statistics.physicalReads
+        consume()
+        XCTAssertEqual(broker.statistics.physicalReads, physicalReads)
+        XCTAssertGreaterThan(broker.statistics.cacheHits, cachedHits)
+    }
+
+    func testPreadErrorsPreserveBufferIncludingFailureAfterACacheHit() throws {
+        let pageBytes = 64 * 1024
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("source")
+        try Data(repeating: 7, count: 2 * pageBytes + 17).write(to: url)
+        let reader = try FileHandle(forReadingFrom: url), writer = try FileHandle(forWritingTo: url)
+        defer { try? reader.close(); try? writer.close() }
+        let directory = Darwin.open(root.path, O_RDONLY)
+        XCTAssertGreaterThanOrEqual(directory, 0)
+        guard directory >= 0 else { return }
+        defer { _ = Darwin.close(directory) }
+        let broker = SharedSourceIO()
+        var warm = [UInt8](repeating: 0, count: 8)
+        let warmCount = warm.withUnsafeMutableBytes {
+            broker.pread(reader.fileDescriptor, into: $0, offset: 0)
+        }
+        XCTAssertEqual(warmCount, warm.count)
+        let cachedHits = broker.statistics.cacheHits
+        let requests: [(descriptor: Int32, offset: Int64, error: Int32)] = [
+            (-1, 0, EBADF),
+            (reader.fileDescriptor, -1, EINVAL),
+            (directory, 0, EINVAL),
+            (writer.fileDescriptor, Int64(pageBytes - 8), EBADF),
+        ]
+        for request in requests {
+            let original = [UInt8](repeating: 0xd3, count: 32)
+            var buffer = original
+            errno = 0
+            let count = buffer.withUnsafeMutableBytes {
+                broker.pread(request.descriptor, into: $0, offset: request.offset)
+            }
+            let observedError = errno
+            XCTAssertEqual(count, -1)
+            XCTAssertEqual(observedError, request.error)
+            XCTAssertEqual(buffer, original)
+        }
+        XCTAssertGreaterThan(broker.statistics.cacheHits, cachedHits)
+    }
+
+    func testPreadEmptyAndEOFRangesDoNotWriteBufferOrReadPhysicalBytes() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([4, 5, 6]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let broker = SharedSourceIO()
+        for offset in [Int64(3), 4, Int64.max] {
+            let original = [UInt8](repeating: 0xd3, count: 8)
+            var buffer = original
+            let count = buffer.withUnsafeMutableBytes {
+                broker.pread(reader.fileDescriptor, into: $0, offset: offset)
+            }
+            XCTAssertEqual(count, 0)
+            XCTAssertEqual(buffer, original)
+        }
+        let empty = UnsafeMutableRawBufferPointer(start: nil, count: 0)
+        XCTAssertEqual(broker.pread(-1, into: empty, offset: 0), 0)
+        errno = 0
+        let invalidOffset = broker.pread(-1, into: empty, offset: -1)
+        let observedError = errno
+        XCTAssertEqual(invalidOffset, -1)
+        XCTAssertEqual(observedError, EINVAL)
+        XCTAssertEqual(broker.statistics.physicalReads, 0)
+        XCTAssertEqual(broker.statistics.cachedBytes, 0)
+    }
 }

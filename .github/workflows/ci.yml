@@ -316,6 +316,16 @@ jobs:
             --require testCopiesBeforeFirstClaimAllocateAndOwnKeysIndependently \
             --require testCopiesAfterAllocationKeepOwnersAndFIFOIndependent \
             --require testHashedOperationsNeverReserveExactOwners \
+            --require testConsumersSharePhysicalRangesAndKeepIndependentOffsets \
+            --require testRewriteAppendTruncateAndReplacementCannotReuseOldPages \
+            --require testHardLinksUseOneCacheAndNestedValidationAlwaysReadsPhysicalBytes \
+            --require testBoundsEvictionAndInPlaceTruncateCannotReturnOldBytes \
+            --require testDefaultBudgetEvictsOldPagesButKeepsFreshReadsCorrect \
+            --require testPreadSharesCrossPageTailBytesWithoutMovingConsumerOffsets \
+            --require testPreadCopiesMaximumRangeAfterEvictionAndLeavesBytesBeyondCapUntouched \
+            --require testPreadProbeAndNestedUncachedReadsBypassWarmPages \
+            --require testPreadErrorsPreserveBufferIncludingFailureAfterACacheHit \
+            --require testPreadEmptyAndEOFRangesDoNotWriteBufferOrReadPhysicalBytes \
             --require testExactPriceIndexMatchesIndependentGroupingOfEveryBundledIdentifier \
             --require testExactPriceIndexKeepsFirstSameIDAndNeverResolvesAnAmbiguousAlias \
             --require testSummariesPriceEachKnownRequestAndKeepUnpricedRowsVisible \
