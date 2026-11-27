@@ -267,4 +267,141 @@ final class SharedSourceIOTests: XCTestCase {
         XCTAssertEqual(broker.statistics.physicalReads, 0)
         XCTAssertEqual(broker.statistics.cachedBytes, 0)
     }
+
+    func testPhysicalProbeReturnsExactRangesAndStableCopiesAcrossEviction() throws {
+        let pageBytes = 64 * 1024
+        let maximum = 4 * 1024 * 1024
+        let input = Data((0..<(maximum + 2 * pageBytes + 73)).map { UInt8($0 % 251) })
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let otherURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try input.write(to: url)
+        try Data(repeating: 0x5a, count: 3 * pageBytes).write(to: otherURL)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: otherURL)
+        }
+        let first = try FileHandle(forReadingFrom: url), second = try FileHandle(forReadingFrom: url)
+        let other = try FileHandle(forReadingFrom: otherURL)
+        defer { try? first.close(); try? second.close(); try? other.close() }
+        try first.seek(toOffset: 41)
+        try second.seek(toOffset: 79)
+        let broker = SharedSourceIO(maxCacheBytes: 2 * pageBytes, maxOwners: 2)
+
+        let cachedOffset = pageBytes + 7
+        let cachedCount = pageBytes + 23
+        let cached = try broker.read(descriptor: first.fileDescriptor, offset: Int64(cachedOffset),
+                                     count: cachedCount)
+        XCTAssertEqual(cached, input[cachedOffset..<(cachedOffset + cachedCount)])
+        var cachedCopy = cached
+        cachedCopy[0] ^= 0xff
+        XCTAssertNotEqual(cachedCopy, cached)
+        XCTAssertEqual(cached, input[cachedOffset..<(cachedOffset + cachedCount)])
+        let warmReads = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: second.fileDescriptor, offset: Int64(cachedOffset),
+                                       count: cachedCount), cached)
+        XCTAssertEqual(broker.statistics.physicalReads, warmReads)
+
+        let fullPageOffset = pageBytes
+        var before = broker.statistics
+        let fullPageProbe = try broker.read(descriptor: second.fileDescriptor, offset: Int64(fullPageOffset),
+                                            count: pageBytes, probe: true)
+        XCTAssertEqual(fullPageProbe, input[fullPageOffset..<(fullPageOffset + pageBytes)])
+        XCTAssertGreaterThan(broker.statistics.physicalReads, before.physicalReads)
+        XCTAssertEqual(broker.statistics.cacheHits, before.cacheHits)
+        var fullPageCopy = fullPageProbe
+        fullPageCopy[0] ^= 0xff
+        XCTAssertNotEqual(fullPageCopy, fullPageProbe)
+        XCTAssertEqual(fullPageProbe, input[fullPageOffset..<(fullPageOffset + pageBytes)])
+
+        let partialOffset = input.count - 73
+        before = broker.statistics
+        let partialProbe = try broker.read(descriptor: second.fileDescriptor, offset: Int64(partialOffset),
+                                           count: pageBytes, probe: true)
+        XCTAssertEqual(partialProbe.count, 73)
+        XCTAssertEqual(partialProbe, input[partialOffset..<input.count])
+        XCTAssertGreaterThan(broker.statistics.physicalReads, before.physicalReads)
+        XCTAssertEqual(broker.statistics.cacheHits, before.cacheHits)
+
+        before = broker.statistics
+        let cappedProbe = try broker.read(descriptor: second.fileDescriptor, offset: 37,
+                                          count: maximum + 1_000, probe: true)
+        XCTAssertEqual(cappedProbe.count, maximum)
+        XCTAssertEqual(cappedProbe, input[37..<(37 + maximum)])
+        XCTAssertGreaterThan(broker.statistics.physicalReads, before.physicalReads)
+        XCTAssertEqual(broker.statistics.cacheHits, before.cacheHits)
+        let eofReads = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: second.fileDescriptor, offset: Int64(input.count),
+                                       count: pageBytes, probe: true), Data())
+        XCTAssertEqual(broker.statistics.physicalReads, eofReads)
+        XCTAssertEqual(try first.offset(), 41)
+        XCTAssertEqual(try second.offset(), 79)
+
+        _ = try broker.read(descriptor: other.fileDescriptor, offset: 0, count: 3 * pageBytes)
+        XCTAssertLessThanOrEqual(broker.statistics.cachedBytes, 2 * pageBytes)
+        let readsBeforeReload = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: first.fileDescriptor, offset: Int64(cachedOffset),
+                                       count: cachedCount), cached)
+        XCTAssertGreaterThan(broker.statistics.physicalReads, readsBeforeReload)
+        XCTAssertEqual(cached, input[cachedOffset..<(cachedOffset + cachedCount)])
+        XCTAssertEqual(cachedCopy[0], cached[0] ^ 0xff)
+        XCTAssertEqual(fullPageProbe, input[fullPageOffset..<(fullPageOffset + pageBytes)])
+        XCTAssertEqual(fullPageCopy[0], fullPageProbe[0] ^ 0xff)
+        XCTAssertEqual(partialProbe, input[partialOffset..<input.count])
+        XCTAssertEqual(cappedProbe, input[37..<(37 + maximum)])
+    }
+
+    func testReturnedDataSnapshotsSurviveOwnerEvictionAndSameFileOverwrite() throws {
+        let pageBytes = 64 * 1024
+        let originalBytes = Data(repeating: 0x2a, count: 2 * pageBytes)
+        let replacementBytes = Data(repeating: 0xb4, count: 2 * pageBytes)
+        let otherBytes = Data((0..<(2 * pageBytes)).map { UInt8($0 % 251) })
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let primaryURL = root.appendingPathComponent("primary")
+        let otherURL = root.appendingPathComponent("other")
+        try originalBytes.write(to: primaryURL)
+        try otherBytes.write(to: otherURL)
+        let reader = try FileHandle(forReadingFrom: primaryURL)
+        let writer = try FileHandle(forWritingTo: primaryURL)
+        let other = try FileHandle(forReadingFrom: otherURL)
+        defer { try? reader.close(); try? writer.close(); try? other.close() }
+        let broker = SharedSourceIO(maxCacheBytes: 2 * pageBytes, maxOwners: 1)
+
+        let snapshot = try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: 2 * pageBytes)
+        XCTAssertEqual(snapshot, originalBytes)
+        var editedCopy = snapshot
+        let changedIndex = 17
+        let editedByte = snapshot[changedIndex] ^ 0xff
+        editedCopy[changedIndex] = editedByte
+        XCTAssertEqual(editedCopy[changedIndex], editedByte)
+        XCTAssertEqual(snapshot, originalBytes)
+
+        XCTAssertEqual(try broker.read(descriptor: other.fileDescriptor, offset: 0, count: 2 * pageBytes), otherBytes)
+        XCTAssertEqual(broker.statistics.owners, 1)
+        XCTAssertEqual(snapshot, originalBytes)
+        XCTAssertEqual(editedCopy[changedIndex], editedByte)
+
+        let readsBeforeOwnerReload = broker.statistics.physicalReads
+        let reloadedSnapshot = try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: 2 * pageBytes)
+        XCTAssertEqual(reloadedSnapshot, originalBytes)
+        XCTAssertGreaterThan(broker.statistics.physicalReads, readsBeforeOwnerReload)
+        try writer.seek(toOffset: 0)
+        try writer.write(contentsOf: replacementBytes)
+        try writer.synchronize()
+        let readsBeforeOverwriteReload = broker.statistics.physicalReads
+        let refreshed = try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: 2 * pageBytes)
+        XCTAssertEqual(refreshed, replacementBytes)
+        XCTAssertGreaterThan(broker.statistics.physicalReads, readsBeforeOverwriteReload)
+        XCTAssertEqual(snapshot, originalBytes)
+        XCTAssertEqual(reloadedSnapshot, originalBytes)
+        XCTAssertEqual(editedCopy[changedIndex], editedByte)
+        var refreshedCopy = refreshed
+        refreshedCopy[changedIndex] ^= 0xff
+        XCTAssertNotEqual(refreshedCopy, refreshed)
+        XCTAssertEqual(refreshed, replacementBytes)
+        let readsAfterReload = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: 2 * pageBytes), replacementBytes)
+        XCTAssertEqual(broker.statistics.physicalReads, readsAfterReload)
+    }
 }

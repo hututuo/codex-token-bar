@@ -58,13 +58,29 @@
 
 其中公开 0.9.7 升级已双平台成功，10 类独立审计全部通过：macOS 8 项升级及 126 项支持回归无失败或跳过，Windows 3 项 importer、非 cfg(test) 四阶段恢复 probe、19 类 manifest / 23 条报告通过；两份原始 ZIP 的 SHA-256 与 GitHub digest 一致，32 条 immutableFiles 哈希、最终 A/B 数据与重复启动导出均逐项复核。审计前后 862 个原始文件的字节哈希不变。证据在 `/tmp/tokenbar-public097-run-46070454998/`，简明报告为 `AUDIT.md`。这些都是 synthetic fixtures 与隔离 production-code probe，不能替代安装或真实用户库验收；其余运行的最终结果仍待审计。
 
-完整 CI `46070455053` 已运行成功，执行封条、实际通过/跳过清单及 artifact 的最终独立审计继续进行。形成版本矩阵 `46070506166` 已完成并独立审计通过：8/8 格、64 份 production proof、963 项检查，16 份 producer ZIP 的 256 成员、8 份 artifact ZIP digest、每格 249 个 production Git blob、最终恢复材料与 SQLite migration-state 均一致，全部 `cfgTest=false`。证据在 `/tmp/tokenbar-formed-run-46070506166/`；这是 synthetic Rust production 升级路径，尚未安装当前候选。
+完整 CI `46070455053` 已独立审计通过，14 份 artifact ZIP 的 API SHA-256、候选 checkout 与执行前后源码封条均一致。Swift XCTest 为 2672 passed / 38 skipped，Swift Testing 为 701 passed / 1 skipped；后者尾部的 702 包含显式性能跳过项，不能全部计作通过。13 项空源发现必测各有唯一实际 passed 记录。macOS native 为 1921 passed / 14 ignored，Windows 为 1862 passed / 15 ignored；Windows 的真实 helper IPC 另行执行 1 passed，其余 14 个 ignored 仍未运行。frontend Node 1501、cloud Node 18、release Node 112 passed / 1 skipped，frontend Python 94 项通过。双平台 production、cleanup/identity 负控及 Windows updater/packaging 均通过；production dependency audit 为 0，但 npm ci 报告 3 个 high。完整 skip 与封条见 `/tmp/tokenbar-ci-run-46070455053/audit.md`。
+
+形成版本矩阵 `46070506166` 已完成并独立审计通过：8/8 格、64 份 production proof、963 项检查，16 份 producer ZIP 的 256 成员、8 份 artifact ZIP digest、每格 249 个 production Git blob、最终恢复材料与 SQLite migration-state 均一致，全部 `cfgTest=false`。证据在 `/tmp/tokenbar-formed-run-46070506166/`；这是 synthetic Rust production 升级路径，尚未安装当前候选。
+
+资源 run `46070874247` 的 aggregate 子任务已成功并独立复核 482 项：schema2 输入 1200/12000、cold/cache-hit、24 records/12 pairs 的来源、字节哈希、物理行 oracle、数据库及语义一致。cold CPU 下降约 85.25%–87.74%，cache-hit 下降约 14.71%–18.64%；其 lifetime RSS 比值约 0.9776–1.0183，不含 physical footprint。该子系统结果不能替代仍在采样的整 App 配对。证据在 `/tmp/tokenbar-resource-run-46070874247/aggregate-independent-audit.md`。
 
 ## SharedSourceIO 上游读取候选
 
 本提交优化缓存 `pread` 的重复分配：此前每次先将页拼入完整 `Data`，返回后再复制到调用方缓冲区；现在在原有锁和文件 generation 校验范围内保存不可变页/range，完成末次 stamp 校验后直接复制。最多持有 65 个页片段，即使本次读取中发生缓存逐出，片段也保留有效存储；所有读取或校验错误都在写 caller buffer 前返回。公共 `read` 的组装、物理探针、嵌套 uncached、4 MiB 单次上限、EOF、独立 descriptor offset 和缓存统计合同保持。此次没有根据 heap 类型猜测删除缓存或解析状态，也没有改变 `rawRead` 分配策略。
 
 新增五项公共 API 回归：跨页与尾页、逐出后的最大范围和 cap 后 sentinel、probe/嵌套 bypass、错误时 buffer 保全、零长度/EOF；错误用例先缓存第一页，再用同 inode 的只写 descriptor 读取跨页范围，验证前页命中而后页 `EBADF` 时整个 buffer 不变。五项既有 `read` 回归与五项新 `pread` 回归均加入 CI 必执行清单。独立静态审查无明确阻断；本地 execution-gate 15 项、workflow contract 9 项及 YAML/bash/diff 检查通过。原生编译、测试及新产品的资源收益仍待云端，不能把删除分配代码路径当作已经量化的 CPU/RSS/footprint 改善。
+
+该候选已推送为 `1d59f34b1851b806d7cb3fbf9aaf0ce08790e4bb`，远端完整 SHA 已读回复核。完整 CI `46074134352`、公开 0.9.7 升级 `46074134405` 及资源配对 `46074193555` 均绑定该源；资源 run 的产品和 harness 都为该 SHA，输入保持原 baseline、静态来源与采样协议。dispatch 请求及 run 绑定保存在 `/tmp/tokenbar-dispatch-1d59f34b-resource.json`。各运行由独立审计者跟进；尚未将旧 C 的通过结果改记为本 SHA。
+
+## 原始页存储的后续候选
+
+新分配栈将一个 98,304 B 的 Data 分配定位到 C 的 `rawRead` 页读取入口。后续候选将 `Data(count:)` 后再写入，改为 `malloc(count)` 的独立未初始化存储，原 `Darwin.pread` 循环读满后通过 `Data(bytesNoCopy:count:deallocator:.free)` 转交所有权；任意读取错误在返回前释放裸存储。EINTR 重试、提前 EOF 的 EAGAIN、最后 stamp 校验、缓存预算与所有 probe/cap 语义保留；malloc 失败现在抛出 ENOMEM。缓存中的页保持不可变。两个独立静态审查未发现阻断，原生生命周期与字节回归仍待云端。
+
+新增两项公共 API 回归，覆盖热缓存上的 64 KiB 物理 probe、73 字节尾页、4 MiB cap、EOF 不读取、独立 descriptor offset、返回 Data 副本修改、另一 inode 的页/owner 逐出，以及重热后同 inode 同长度覆盖时旧快照保全。原先十项及新增两项均列入标准 Swift CI 的必执行清单。本地仍只运行轻量 execution-gate/workflow/YAML/bash/diff 检查，尚无本候选原生执行证据。
+
+这里请求的分配尺寸等于逻辑读取尺寸，不代表 malloc 的物理尺寸无取整，也不保证 Foundation 永不复制。没有通过 `withUnsafeBytes` 指针调用 `malloc_size` 写永久断言：该 API 提供连续视图，不是通用的 malloc 所有者起点合同。实际分配大小、后续 Data mutation 的复制成本与整 App 收益仍须精确 SHA 云端诊断和非插桩配对，不能由删除预填充或预留代码直接推算。
+
+现有四地址诊断优先选最大 Data 与另一块 98,304 B Data；若后续页变为 64 KiB 或被 heap 标成一般 malloc，可能不再入选。因此“不再选到旧栈”本身不构成分配改善证据。SourceSeconds 的稀疏页可行性也已复核：实际共有 13 种 source，本份 20 文件 fixture 仅有 Claude Code 一种，Float 元素载荷为 360,000 B；20 个会话不等于 20 个 source。本批没有改其 Float32 舍入、subset cache 或存储表示。
 
 ## 精确 3256e3f0 云端结果（2026-11-28）
 
@@ -96,7 +112,11 @@ artifact 原始 ZIP SHA-256 为 `344b2ba41abcf394a89c6b5e400b90019376ca4d9f919ed
 
 两份 stdlib harness 测试现为 67 项，全部通过，包含精确类型、独立地址去重、缺失角色补位和持久化元数据。对已有原始 heap 的轻量复算命中四个新角色；这只是选择器复算，不是新产品的诊断结果。workflow 的并发组另按 allocation/pair 分开，允许两个独立 runner 同时测量与诊断，保留各自精确 source/harness 和 artifact 标识。
 
-该 harness 已推送为 `ecefd40cd5f416c2046ddfc798f1fb460fc48b02`，新诊断 `46072357467` 于 2026-11-28 05:45:36 +0800 启动，产品固定 `8b1549495d9ca2cd972a0573552d389c6c1e8ad2`。当前 SharedSourceIO 工作树改动不属于该诊断产品；不把其结果当作 SharedSourceIO 候选的实测结果。
+该 harness 已推送为 `ecefd40cd5f416c2046ddfc798f1fb460fc48b02`，新诊断 `46072357467` 于 2026-11-28 05:45:36 +0800 启动，产品固定 `8b1549495d9ca2cd972a0573552d389c6c1e8ad2`。后续 SharedSourceIO 候选不属于该诊断产品；不把其结果当作 SharedSourceIO 候选的实测结果。
+
+新诊断已完成并独立核对 142/142 项，App trial PASS，整体 diagnostic 仍为 PARTIAL：四份 history 各触及 64 KiB cap，返回 `-9`、`truncated=true`、`timedOut=false`，导致 pinned harness 退出 1。四份主栈分别有 41/23/22/20 个连续帧并到达线程或进程入口，cap 均发生在其后的 Binary Images 清单；没有缺失或补位角色。四个选中分配共 983,040 B：PriceBook bundled Data 131,072 B、SharedSourceIO 原始页读取 98,304 B、Deduper ring String array 393,216 B、SourceSeconds Float array 360,448 B。heap 在 17.748 秒完成，106 条至少 64 KiB 地址中 Data 共 62 块 / 6,127,616 B；只有一个 Data 页站点被采栈，不能据此把全部 Data 归给缓存。原始 ZIP 的 SHA-256 `b417835782a172e95334e727854b8627624dcd7eb37edbe6dafd64196cd8cae2` 与 API 一致，44 成员、binary UUID、完整 20k ledger 及另存的 11 份精确 C 源文件均核对。报告在 `/tmp/tokenbar-allocation-run-46072357467/independent-allocation-audit.md`。这些是分配站点证据，仍不是 retaining ownership、可回收量、泄漏或合格性能配对。
+
+PriceBook 的源码所有权另已独立核对：`static bundled` 保留的 `PriceTable.data` 就是 loader 原样传入的原始 JSON，供 HistoryAnalyzer 写入 HistoryDatabase 的版本化 BLOB，并在恢复时重新加载。这是产品保留历史价格所需的文档，不能将其作为无用临时 Data 删除。源码解释了预期持有者，尚未将它与所选地址的 retaining graph 直接绑定。
 
 只读源码复核另确认：`SharedSourceIO.shared.pages` 会长期保留最多 4,194,304 个逻辑字节的原始页，按 65,536 字节目标页读取，`Data` 实际 capacity 尚无直接证据；当前 fixture 的换行缓冲不需要跨块保存。Dashboard 已用 LazyVStack，侧栏详情与状态栏 popover 按需创建，默认 Codex 范围下外部 ranking projection 直接返回空，未发现适用于本份 fixture 的可安全删除大块状态。上述源码路径只提供待验证 owner，不能把 64×80 KiB 的全局 size 桶直接绑定到共享页缓存。
 

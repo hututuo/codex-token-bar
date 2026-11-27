@@ -132,16 +132,19 @@ public final class SharedSourceIO: @unchecked Sendable {
         }
     }
     private func rawRead(_ descriptor: Int32, offset: Int64, count: Int) throws -> Data {
-        var result = Data(count:count), read = 0
-        try result.withUnsafeMutableBytes { buffer in
+        guard let buffer = malloc(count) else { throw POSIXError(.ENOMEM) }
+        var read = 0
+        do {
             while read < count {
-                let n = Darwin.pread(descriptor,buffer.baseAddress!.advanced(by:read),count-read,off_t(offset+Int64(read)))
+                let n = Darwin.pread(descriptor,buffer.advanced(by:read),count-read,off_t(offset+Int64(read)))
                 if n < 0 { if errno == EINTR { continue }; throw POSIXError(POSIXErrorCode(rawValue:errno) ?? .EIO) }
                 guard n > 0 else { throw POSIXError(.EAGAIN) }
                 reads &+= 1; read += n
             }
-        }
-        return result
+        } catch { free(buffer); throw error }
+        // Transfer only completely read storage. Failed reads never expose
+        // uninitialized bytes, and Data owns the allocation from here on.
+        return Data(bytesNoCopy: buffer, count: count, deallocator: .free)
     }
     private func invalidate(_ identity: Identity) {
         for key in pages.keys.filter({ $0.identity == identity }) {

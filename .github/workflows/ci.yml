@@ -326,6 +326,8 @@ jobs:
             --require testPreadProbeAndNestedUncachedReadsBypassWarmPages \
             --require testPreadErrorsPreserveBufferIncludingFailureAfterACacheHit \
             --require testPreadEmptyAndEOFRangesDoNotWriteBufferOrReadPhysicalBytes \
+            --require testPhysicalProbeReturnsExactRangesAndStableCopiesAcrossEviction \
+            --require testReturnedDataSnapshotsSurviveOwnerEvictionAndSameFileOverwrite \
             --require testExactPriceIndexMatchesIndependentGroupingOfEveryBundledIdentifier \
             --require testExactPriceIndexKeepsFirstSameIDAndNeverResolvesAnAmbiguousAlias \
             --require testSummariesPriceEachKnownRequestAndKeepUnpricedRowsVisible \
