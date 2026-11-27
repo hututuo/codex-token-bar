@@ -23,6 +23,17 @@ fn database() -> Connection {
     connection
 }
 
+fn shared_usage_database(version: i64) -> Connection {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch(
+        "CREATE TABLE client_usage_events(client TEXT, event_id TEXT, payload TEXT);
+         CREATE TABLE client_file_checkpoints(client TEXT, source_key TEXT, offset INTEGER);
+         PRAGMA user_version=2;",
+    ).unwrap();
+    connection.pragma_update(None, "user_version", version).unwrap();
+    connection
+}
+
 fn half_minute_point(series: &ActivitySpeedSeries, bucket: i64) -> &ActivitySpeedTrendPoint {
     series
         .half_minute_trend
@@ -646,6 +657,38 @@ fn schema_initialization_preserves_user_version_and_usage_ledger() {
         .unwrap();
     assert_eq!(user_version, 17);
     assert_eq!(ledger_rows, 1);
+}
+
+#[test]
+fn future_shared_usage_schema_refuses_activity_ddl_prune_and_sample_writes() {
+    let connection = shared_usage_database(3);
+    assert!(create_schema(&connection).is_err());
+    assert_eq!(
+        connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='activity_speed_meta'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap(),
+        0,
+    );
+
+    connection.pragma_update(None, "user_version", 2_i64).unwrap();
+    create_schema(&connection).unwrap();
+    add_sample(&connection, &sample("before", 1_000.0, 1_010.0, 5.0, 10.0), 2_000.0).unwrap();
+    connection.pragma_update(None, "user_version", 3_i64).unwrap();
+
+    let error = add_sample(&connection, &sample("blocked", 1_010.0, 1_020.0, 7.0, 10.0), 2_000.0)
+        .unwrap_err();
+    assert!(error.to_string().contains("高于此程序支持的版本"));
+    assert!(query(&connection, 2_000.0, &ActivitySpeedFilter::default(), 8).is_err());
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM activity_speed_sample_ids", [], |row| row.get::<_, i64>(0)).unwrap(),
+        1,
+    );
+    assert_eq!(
+        connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(),
+        3,
+    );
 }
 
 #[test]

@@ -143,6 +143,8 @@ pub(super) fn migrate_body_speed_to_shared(
     )?;
     target.busy_timeout(std::time::Duration::from_secs(3))?;
     let transaction = target.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let schema_version = transaction.physical_user_version()?;
+    crate::core::multi_client_usage::require_b_schema_v2_version(schema_version)?;
 
     // Another process may have completed this source while the immutable A
     // snapshot was being made. Recheck under B's writer lock before copying.

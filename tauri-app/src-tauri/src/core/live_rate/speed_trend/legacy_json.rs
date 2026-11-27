@@ -3,7 +3,7 @@
 
 use super::{normalized_retention_days, safe_now, BodySpeedTrendStore};
 use crate::models::SpeedSample;
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -76,9 +76,11 @@ pub(super) fn import(store: &BodySpeedTrendStore, now: f64) -> rusqlite::Result<
     }
     let digest = hex_digest(&bytes);
     let backup = backup_directory.join(format!("observed-json-{digest}.json"));
+    let transaction = super::begin_body_speed_write_transaction(
+        &mut connection,
+        store.shared_path.is_some(),
+    )?;
     retain_backup(&backup, &bytes)?;
-
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let previous: Option<String> = transaction
         .query_row(
             "SELECT value FROM speed_trend_meta WHERE key=?1",
@@ -306,6 +308,7 @@ fn io_error(error: std::io::Error) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use serde_json::{json, Value};
 
     fn fixture() -> (tempfile::TempDir, BodySpeedTrendStore, PathBuf) {
@@ -314,6 +317,49 @@ mod tests {
         let source = legacy_path(&path).unwrap();
         let store = BodySpeedTrendStore::open(&path).unwrap();
         (root, store, source)
+    }
+
+    #[test]
+    fn future_b_schema_refuses_legacy_json_import_before_backup_or_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let shared_path = root.path().join("multi-client-usage.sqlite");
+        crate::core::multi_client_usage::initialize_usage_database_at(&shared_path).unwrap();
+        let legacy = root.path().join("codex-ledger.sqlite");
+        let store = BodySpeedTrendStore::open_shared(&legacy, &shared_path).unwrap();
+        let source = legacy_path(&legacy).unwrap();
+        let now = 1_800_000_600.0;
+        let bytes = write_source(&source, &[sample("blocked", now - 30.0, 100)], 15);
+        let connection = Connection::open(&shared_path).unwrap();
+        connection.pragma_update(None, "user_version", 3_i64).unwrap();
+        drop(connection);
+
+        let error = store.import_legacy_json(now).unwrap_err();
+        assert!(error.to_string().contains("高于此程序支持的版本"));
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(!root.path().join("backups").exists());
+        let connection = Connection::open(&shared_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM speed_trend_meta WHERE key=?1",
+                    [RECEIPT_KEY],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM speed_samples", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            3,
+        );
     }
 
     fn sample(id: &str, ended: f64, tokens: u32) -> SpeedSample {

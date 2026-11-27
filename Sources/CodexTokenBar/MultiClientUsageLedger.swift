@@ -119,6 +119,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
 
     private static let exactBundledPriceEntries = ExactBundledPriceEntry.makeIndex(for: PriceBook.bundled.models)
 
+    static func sourceKey(for url: URL) -> String {
+        SHA256.hash(data: Data(url.standardizedFileURL.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     init(url: URL, readOnly: Bool = false) throws {
         self.url = url
         if !readOnly { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
@@ -139,6 +145,16 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             let tables = try database.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
             if !tables.isEmpty { _ = try backup() }
             try database.transaction { connection in
+                // Another process may have initialized or upgraded the file
+                // after the read-only admission probe above. Recheck while
+                // holding SQLite's writer lock before any schema DDL.
+                let transactionVersion = try Self.readUserVersion(in: connection)
+                guard transactionVersion <= Self.schemaVersion else {
+                    throw LedgerError.newerSchema(transactionVersion)
+                }
+                guard transactionVersion >= 0 else { throw LedgerError.incompatibleSchema }
+                if transactionVersion == Self.schemaVersion { return }
+                guard transactionVersion == version else { throw LedgerError.incompatibleSchema }
                 try connection.execute("""
                 CREATE TABLE IF NOT EXISTS client_usage_events (
                     client TEXT NOT NULL, event_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -195,14 +211,30 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     }
 
     enum LedgerError: LocalizedError {
-        case newerSchema(Int), invalidEvent, incompatibleSchema
+        case newerSchema(Int), invalidEvent, incompatibleSchema, claudeCheckpointConflict(UsageClient)
         var errorDescription: String? {
             switch self {
             case .newerSchema(let version): "多客户端账本版本 \(version) 比当前软件新，已停止写入"
             case .invalidEvent: "日志包含无效 Token 计数，未写入账本"
             case .incompatibleSchema: "多客户端账本结构与版本不匹配，已停止写入并保留原文件"
+            case .claudeCheckpointConflict(let client): "Claude 日志已有 \(client.rawValue) 客户端账本归属，拒绝跨客户端重分类"
             }
         }
+    }
+
+    /// Runtime write transactions must recheck the database header after
+    /// BEGIN IMMEDIATE. An instance can outlive an update made by another
+    /// process, so constructor-time admission alone is not a write fence.
+    static func requireSupportedWriteSchema(in connection: SQLiteDatabaseConnection) throws {
+        let version = try readUserVersion(in: connection)
+        guard version == schemaVersion else {
+            if version > schemaVersion { throw LedgerError.newerSchema(version) }
+            throw LedgerError.incompatibleSchema
+        }
+    }
+
+    private static func readUserVersion(in connection: SQLiteDatabaseConnection) throws -> Int {
+        try connection.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
     }
 
     @discardableResult func backup() throws -> URL {
@@ -227,6 +259,16 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                   counts.allSatisfy({ $0 >= 0 && $0 <= 10_000_000_000_000 }) else { throw LedgerError.invalidEvent }
         }
         return try database.transaction { connection in
+            try Self.requireSupportedWriteSchema(in: connection)
+            if let client, let sourceKey,
+               client == .claudeCode || client == .claudeDesktop {
+                let opposite: UsageClient = client == .claudeCode ? .claudeDesktop : .claudeCode
+                let ownsSource = try connection.readRows(
+                    "SELECT 1 FROM client_file_checkpoints WHERE client=? AND source_key=? LIMIT 1",
+                    bindings: [.text(opposite.rawValue), .text(sourceKey)]
+                ) { _ in true }.first == true
+                if ownsSource { throw LedgerError.claudeCheckpointConflict(opposite) }
+            }
             var changed = 0
             for incoming in events {
                 changed += try autoreleasepool { () throws -> Int in
@@ -282,6 +324,20 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                               bindings: [.text(client.rawValue), .text(sourceKey)]) {
             MultiClientFileCheckpoint(offset: $0.int64(0) ?? 0, size: $0.int64(1) ?? 0, modified: $0.double(2) ?? 0, identity: $0.text(3) ?? "")
         }.first
+    }
+
+    func claudeCheckpointOwners() throws -> [String: Set<UsageClient>] {
+        let rows = try database.readRows(
+            "SELECT client,source_key FROM client_file_checkpoints WHERE client IN (?,?)",
+            bindings: [.text(UsageClient.claudeCode.rawValue), .text(UsageClient.claudeDesktop.rawValue)]
+        ) { row -> (UsageClient, String)? in
+            guard let rawClient = row.text(0), let client = UsageClient(rawValue: rawClient),
+                  let sourceKey = row.text(1) else { return nil }
+            return (client, sourceKey)
+        }
+        return rows.compactMap { $0 }.reduce(into: [:]) { owners, entry in
+            owners[entry.1, default: []].insert(entry.0)
+        }
     }
 
     /// Reads bounded per-request rankings and complete per-session numeric aggregates from the

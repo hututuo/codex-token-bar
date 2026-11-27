@@ -409,7 +409,8 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         XCTAssertEqual(saved.offset, Int64(offset))
         XCTAssertEqual(saved.size, size)
         XCTAssertEqual(saved.modified, modified)
-        XCTAssertEqual(saved.identity, "claude-cache-lifetimes-v1|" + rawIdentity)
+        let physical = try SourceFileObservation.read(at: source).physicalStamp
+        XCTAssertEqual(saved.identity, "claude-entrypoint-v3|claude-cache-lifetimes-v1|" + rawIdentity + "|physical-v1:" + physical)
         return saved
     }
 

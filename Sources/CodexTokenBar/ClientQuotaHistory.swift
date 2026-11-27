@@ -131,6 +131,7 @@ extension MultiClientUsageLedger {
     /// the file and preserve this table. Codex's account/cycle database is untouched.
     func recordQuotaHistory(_ readings: [ClientQuotaReading], now: Date = Date()) throws {
         try database.transaction { connection in
+            try Self.requireSupportedWriteSchema(in: connection)
             try connection.execute("""
                 CREATE TABLE IF NOT EXISTS client_quota_observations (
                     client TEXT NOT NULL, source TEXT NOT NULL, window_id TEXT NOT NULL,

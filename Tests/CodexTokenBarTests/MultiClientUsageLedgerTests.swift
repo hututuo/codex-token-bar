@@ -333,7 +333,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         let first = try await scanner.scan([preference])
         XCTAssertEqual(first.summaries.first?.apiCostUSD, 0.000614)
         XCTAssertEqual(first.summaries.first?.requests, 1)
-        XCTAssertTrue(try ledger.checkpoint(client: .claudeCode, sourceKey: key)?.identity.hasPrefix("claude-cache-lifetimes-v1|") == true)
+        XCTAssertTrue(try ledger.checkpoint(client: .claudeCode, sourceKey: key)?.identity.hasPrefix("claude-entrypoint-v3|claude-cache-lifetimes-v1|") == true)
         func revision() throws -> Int64 { try ledger.database.readRows("SELECT MAX(revision) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0 }
         let enrichedRevision = try revision()
         _ = try await scanner.scan([preference])
@@ -447,6 +447,28 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try ledger.summaries().first?.outputTokens, 20)
     }
 
+    func testCheckpointTransactionRejectsOppositeClaudeOwnerBeforeWriting() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("claude-owner-fence.sqlite"))
+        let original = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "legacy")
+        XCTAssertEqual(try ledger.ingest([event()], client: .claudeCode, sourceKey: "source", checkpoint: original), 1)
+
+        XCTAssertThrowsError(try ledger.ingest(
+            [event(30, client: .claudeDesktop)],
+            client: .claudeDesktop,
+            sourceKey: "source",
+            checkpoint: .init(offset: 200, size: 200, modified: 11, identity: "reclassified")
+        )) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .claudeCheckpointConflict(.claudeCode) = ledgerError else {
+                return XCTFail("Expected the transaction-time Claude owner fence, got \(error)")
+            }
+        }
+        XCTAssertEqual(try ledger.checkpoint(client: .claudeCode, sourceKey: "source")?.identity, "legacy")
+        XCTAssertNil(try ledger.checkpoint(client: .claudeDesktop, sourceKey: "source"))
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_events") { $0.int(0) }.first, 1)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first, 1)
+    }
+
     func testRowwiseEncodingRollsBackLateDatabaseFailureAndKeepsOriginalRevisions() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("rowwise.sqlite"))
         let initial = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "inode")
@@ -499,6 +521,40 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         try ledger.database.execute("PRAGMA user_version=99")
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
         XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
+    }
+
+    func testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction() throws {
+        let url = root.appendingPathComponent("stale-writer.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        XCTAssertEqual(try ledger.ingest([event()]), 1)
+        let peer = SQLiteDatabaseDriver(url: url, bypassBusinessRoutes: true)
+        try peer.execute("PRAGMA user_version=99")
+
+        var later = event(30)
+        later.eventID = "s:later"
+        let checkpoint = MultiClientFileCheckpoint(offset: 200, size: 200, modified: 11, identity: "inode")
+        XCTAssertThrowsError(try ledger.ingest([later], client: .claudeCode, sourceKey: "file", checkpoint: checkpoint)) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .newerSchema(let version) = ledgerError else {
+                return XCTFail("Expected the transaction-time future-schema refusal, got \(error)")
+            }
+            XCTAssertEqual(version, 99)
+        }
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_events") { $0.int(0) }.first!, 1)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 1)
+        XCTAssertTrue(try ledger.database.readRows("SELECT 1 FROM client_file_checkpoints") { $0.int(0) }.isEmpty)
+        XCTAssertEqual(try peer.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
+
+        try peer.execute("PRAGMA user_version=1")
+        later.eventID = "s:older-schema"
+        XCTAssertThrowsError(try ledger.ingest([later])) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .incompatibleSchema = ledgerError else {
+                return XCTFail("Expected the transaction-time incompatible-schema refusal, got \(error)")
+            }
+        }
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_events") { $0.int(0) }.first!, 1)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 1)
     }
 
     func testRefusingFutureDeleteModeDatabasePreservesEveryByteAndCreatesNoSidecars() throws {

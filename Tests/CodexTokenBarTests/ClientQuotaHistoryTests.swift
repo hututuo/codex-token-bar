@@ -104,6 +104,29 @@ final class ClientQuotaHistoryTests: XCTestCase {
         XCTAssertEqual(history.samples[0].usedPercent, 9.1135, accuracy: 0.000001)
     }
 
+    func testLongLivedQuotaWriterRejectsFutureLedgerSchemaBeforeWriting() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("multi-client-usage.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        let initial = reading(at: now)
+        try ledger.recordQuotaHistory([initial], now: now)
+        let peer = SQLiteDatabaseDriver(url: url, bypassBusinessRoutes: true)
+        try peer.execute("PRAGMA user_version=99")
+
+        let changed = reading(at: now.addingTimeInterval(300), used: 25)
+        XCTAssertThrowsError(try ledger.recordQuotaHistory([changed], now: now.addingTimeInterval(300))) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .newerSchema(let version) = ledgerError else {
+                return XCTFail("Expected the transaction-time future-schema refusal, got \(error)")
+            }
+            XCTAssertEqual(version, 99)
+        }
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_quota_observations") { $0.int(0) }.first!, 1)
+        XCTAssertEqual(try ledger.database.readRows("SELECT used_percent FROM client_quota_observations") { $0.double(0) }.first!, initial.windows[0].usedPercent)
+        XCTAssertEqual(try peer.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
+    }
+
     func testClientsPoolsAndPercentChangesStayIndependent() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

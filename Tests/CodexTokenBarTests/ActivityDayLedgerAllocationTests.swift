@@ -4,7 +4,7 @@ import XCTest
 
 final class ActivityDayLedgerAllocationTests: XCTestCase {
     private static let day: Int64 = 1_800_000_000_000
-    private static let denseBucketCount = 180_000
+    private static let onePageBucketValueCount = 2 * 256
     private static let comparedSets = [
         SourceSet(.codex), SourceSet(.claudeCode), SourceSet(.gemini),
         SourceSet([.codex, .claudeCode]), .everything,
@@ -97,7 +97,7 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
         XCTAssertEqual(ledger.subsetPeakScans, 0)
     }
 
-    func testFirstMeasuredRecordAllocatesDenseBucketsAndPreservesMetrics() {
+    func testFirstMeasuredRecordAllocatesSparsePageAndPreservesMetrics() {
         var ledger = DayLedger(dayStartMs: Self.day)
         XCTAssertEqual(ledger.measuredPeak(), DayLedger.MeasuredPeak())
         XCTAssertEqual(ledger.measuredPeakOutput(for: .everything), 0)
@@ -110,7 +110,7 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
 
         let expectedTotals = TokenTotals(requests: 2, input: 700, cachedInput: 300,
                                         cacheWriteInput: 100, output: 1_400, reasoning: 200)
-        XCTAssertEqual(ledger.measuredBucketCount, Self.denseBucketCount)
+        XCTAssertEqual(ledger.measuredBucketCount, Self.onePageBucketValueCount)
         XCTAssertEqual(ledger.totals, expectedTotals)
         XCTAssertEqual(ledger.totals.total, 2_100)
         XCTAssertEqual(ledger.bySource, [.codex: expectedTotals])
@@ -127,7 +127,39 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
         XCTAssertEqual(ledger.measuredPeakOutput(for: .everything), 1_100.0 / 3)
         XCTAssertEqual(ledger.measuredPeakOutput(for: SourceSet(.codex)), 1_100.0 / 3)
         XCTAssertEqual(ledger.sourcesWithBuckets, SourceSet(.codex))
-        XCTAssertEqual(ledger.measuredBucketCount, Self.denseBucketCount)
+        XCTAssertEqual(ledger.measuredBucketCount, Self.onePageBucketValueCount)
+    }
+
+    func testSparsePagedBucketsCrossPageGapsAndCopiesRemainIndependent() {
+        var ledger = DayLedger(dayStartMs: Self.day)
+        let crossing = record("crossing", start: Self.day + 255_000, end: Self.day + 257_000,
+                               input: 40, output: 20)
+        let distant = record("distant", start: Self.day + 1_024_000, end: Self.day + 1_025_000,
+                             output: 3)
+        ledger.replace(nil, with: crossing)
+        ledger.replace(nil, with: distant)
+
+        let crossingPeak = DayLedger.MeasuredPeak(output: 20.0 / 3,
+                                                  outputAtMs: Self.day + 257_000, total: 20)
+        XCTAssertEqual(ledger.measuredBucketCount, 3 * Self.onePageBucketValueCount)
+        XCTAssertEqual(ledger.measuredPeak(), crossingPeak)
+
+        var copied = ledger
+        copied.replace(crossing, with: nil)
+        XCTAssertEqual(copied.measuredPeak(), .init(output: 1, outputAtMs: Self.day + 1_025_000, total: 1))
+        XCTAssertEqual(ledger.measuredPeak(), crossingPeak)
+
+        let grown = record("distant", start: Self.day + 1_024_000, end: Self.day + 1_025_000,
+                           output: 12)
+        copied.replace(distant, with: grown)
+        XCTAssertEqual(copied.measuredPeak(), .init(output: 4, outputAtMs: Self.day + 1_025_000, total: 4))
+        XCTAssertEqual(ledger.measuredPeak(), crossingPeak)
+
+        let beyondDay = record("beyond-day", start: Self.day + 90_000_000,
+                               end: Self.day + 90_001_000, output: 500)
+        copied.replace(nil, with: beyondDay)
+        XCTAssertEqual(copied.measuredBucketCount, 3 * Self.onePageBucketValueCount)
+        XCTAssertEqual(copied.measuredPeak(), .init(output: 4, outputAtMs: Self.day + 1_025_000, total: 4))
     }
 
     func testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches() {
@@ -165,8 +197,8 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
         assertMatchesFresh(&ledger, records: [])
         XCTAssertEqual(ledger.measuredPeak(), DayLedger.MeasuredPeak())
         XCTAssertEqual(ledger.subsetPeakScans, 16)
-        XCTAssertEqual(ledger.measuredBucketCount, Self.denseBucketCount,
-                       "Allocated dense buckets are retained after the last removal")
+        XCTAssertEqual(ledger.measuredBucketCount, Self.onePageBucketValueCount,
+                       "Allocated pages are retained after the last removal")
         XCTAssertEqual(ledger.sourcesWithBuckets, SourceSet([.codex, .claudeCode, .gemini]))
         assertMatchesFresh(&ledger, records: [])
         XCTAssertEqual(ledger.subsetPeakScans, 16)
@@ -182,7 +214,7 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
         XCTAssertEqual(empty.measuredBucketCount, 0)
         assertMatchesFresh(&empty, records: [])
         XCTAssertTrue(empty.sourcesWithBuckets.isEmpty)
-        XCTAssertEqual(allocated.measuredBucketCount, Self.denseBucketCount)
+        XCTAssertEqual(allocated.measuredBucketCount, Self.onePageBucketValueCount)
         assertMatchesFresh(&allocated, records: [original])
 
         var unchanged = allocated
@@ -198,33 +230,34 @@ final class ActivityDayLedgerAllocationTests: XCTestCase {
         XCTAssertEqual(allocated.measuredPeakOutput(for: SourceSet(.codex)), 600)
         XCTAssertEqual(unchanged.measuredPeakOutput(for: SourceSet(.codex)), 300)
         XCTAssertEqual(empty.measuredBucketCount, 0)
-        XCTAssertEqual(unchanged.measuredBucketCount, Self.denseBucketCount)
+        XCTAssertEqual(unchanged.measuredBucketCount, Self.onePageBucketValueCount)
     }
 
     func testDayBoundariesAndWidenedDurationsPreservePeakDistribution() {
         let upper = Self.day + 90_000_000
-        let cases: [(String, Int64, ResponseRecord, Double, DayLedger.MeasuredPeak)] = [
+        let cases: [(String, Int64, ResponseRecord, Double, DayLedger.MeasuredPeak, Int)] = [
             ("day-start clipping", Self.day,
              record("lower", start: Self.day - 500, end: Self.day + 500, input: 300, output: 600),
-             600, .init(output: 100, outputAtMs: Self.day + 1_000, total: 150)),
+             600, .init(output: 100, outputAtMs: Self.day + 1_000, total: 150), Self.onePageBucketValueCount),
             ("fractional day uses its floor second", Self.day + 250,
              record("fractional", start: Self.day - 250, end: Self.day + 250, input: 100, output: 200),
-             400, .init(output: 100.0 / 3, outputAtMs: Self.day + 1_000, total: 50)),
+             400, .init(output: 100.0 / 3, outputAtMs: Self.day + 1_000, total: 50), Self.onePageBucketValueCount),
             ("25-hour end clipping", Self.day,
              record("upper", start: upper - 1_500, end: upper + 500, input: 600, output: 1_200),
-             600, .init(output: 300, outputAtMs: upper, total: 450)),
+             600, .init(output: 300, outputAtMs: upper, total: 450),
+             2 * (DayLedger.capacitySeconds % 256)),
             ("zero duration widens backward to 500 ms", Self.day,
              record("zero", start: Self.day + 10_250, end: Self.day + 10_250, input: 300, output: 600),
-             1_200, .init(output: 200, outputAtMs: Self.day + 11_000, total: 300)),
+             1_200, .init(output: 200, outputAtMs: Self.day + 11_000, total: 300), Self.onePageBucketValueCount),
             ("short duration widens backward to 500 ms", Self.day,
              record("short", start: Self.day + 20_900, end: Self.day + 21_100, input: 300, output: 600),
-             1_200, .init(output: 200, outputAtMs: Self.day + 22_000, total: 300)),
+             1_200, .init(output: 200, outputAtMs: Self.day + 22_000, total: 300), Self.onePageBucketValueCount),
         ]
 
-        for (name, dayStart, response, average, peak) in cases {
+        for (name, dayStart, response, average, peak, bucketValueCount) in cases {
             var ledger = DayLedger(dayStartMs: dayStart)
             ledger.replace(nil, with: response)
-            XCTAssertEqual(ledger.measuredBucketCount, Self.denseBucketCount, name)
+            XCTAssertEqual(ledger.measuredBucketCount, bucketValueCount, name)
             XCTAssertEqual(ledger.totals, TokenTotals(requests: 1, input: response.usage.input,
                                                      output: response.usage.output), name)
             XCTAssertEqual(ledger.average, average, name)

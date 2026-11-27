@@ -321,6 +321,15 @@ impl StoreConnection {
         self.raw.pragma_query_value(schema, pragma_name, f)
     }
 
+    /// Read the physical SQLite header value, bypassing the logical-store
+    /// `user_version` projection. Shared databases such as usage ledger B use
+    /// the file-level version; it must be checked while a writer transaction
+    /// is active, even when this connection is namespace-scoped.
+    pub(crate) fn physical_user_version(&self) -> Result<i64> {
+        self.raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+    }
+
     pub(crate) fn transaction(&mut self) -> Result<StoreTransaction<'_>> {
         self.transaction_with_behavior(TransactionBehavior::Deferred)
     }
@@ -526,6 +535,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(physical, 1);
+    }
+
+    #[test]
+    fn scoped_store_physical_user_version_reads_container_header() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared.sqlite");
+        let store_id = "b".repeat(64);
+        let prefix = format!("s{store_id}_");
+        let raw = Connection::open(&path).unwrap();
+        raw.pragma_update(None, "user_version", 3_i64).unwrap();
+        drop(raw);
+
+        let mut store = StoreConnection::open_scoped(
+            &path,
+            store_id,
+            prefix.clone(),
+            ["events".to_owned()],
+        )
+        .unwrap();
+        assert!(store
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .is_err());
+
+        let transaction = store
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let version = transaction.physical_user_version().unwrap();
+        assert_eq!(version, 3);
+        let refusal = crate::core::multi_client_usage::require_b_schema_v2_version(version)
+            .unwrap_err();
+        assert!(refusal.to_string().contains("高于此程序支持的版本"));
+        transaction.rollback().unwrap();
+        drop(store);
+
+        let raw = Connection::open(&path).unwrap();
+        let preserved_version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(preserved_version, 3);
+        let body_tables: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [format!("{prefix}speed_samples")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body_tables, 0, "future schema refusal precedes namespaced DDL");
     }
 
     #[test]

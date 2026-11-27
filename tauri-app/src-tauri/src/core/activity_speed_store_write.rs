@@ -25,7 +25,7 @@ pub(in crate::core) fn add_samples(
     }
     let raw_cutoff = now - RAW_RETENTION;
     let rollup_cutoff = now - ROLLUP_RETENTION;
-    let transaction = connection.unchecked_transaction()?;
+    let transaction = begin_activity_write_transaction(connection)?;
     prune(&transaction, now)?;
     let mut inserted = 0;
     for sample in samples {

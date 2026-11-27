@@ -80,16 +80,16 @@ final class MultiClientUsageParserTests: XCTestCase {
         XCTAssertEqual(paired.desktop.files, desktop.files)
         XCTAssertEqual(paired.code.truncated, code.truncated)
         XCTAssertEqual(paired.desktop.truncated, desktop.truncated)
-        XCTAssertEqual(code.files.map(\.lastPathComponent), ["01-cli.jsonl", "03-metadata.jsonl", "04-partial.jsonl", "05-empty.jsonl"])
+        XCTAssertEqual(code.files.map(\.lastPathComponent), ["01-cli.jsonl", "03-metadata.jsonl", "05-empty.jsonl"])
         XCTAssertEqual(desktop.files.map(\.lastPathComponent), ["02-desktop.jsonl", "06-bom.jsonl"])
-        XCTAssertFalse(code.truncated); XCTAssertFalse(desktop.truncated)
+        XCTAssertTrue(code.truncated); XCTAssertTrue(desktop.truncated)
         // Every fixture fits one classification read and neither independent selection stops
         // early, so the two independent calls open/read exactly twice the paired work.
         XCTAssertEqual(paired.classificationCount, fixtures.count)
         XCTAssertEqual(paired.classificationBytesRead, fixtures.reduce(0) { $0 + $1.1.count })
     }
 
-    func testClaudePairedDiscoveryPreservesPerFileClassificationLimit() throws {
+    func testClaudePairedDiscoveryClassifiesValidFirstRecordBeyond64KiB() throws {
         let fm = FileManager.default
         let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-limit-\(UUID())")
         defer { try? fm.removeItem(at: home) }
@@ -98,23 +98,25 @@ final class MultiClientUsageParserTests: XCTestCase {
         let limited = project.appendingPathComponent("limited.jsonl")
         let desktop = project.appendingPathComponent("desktop.jsonl")
         let desktopRecord = Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8)
-        var longRecord = Data(repeating: 0x20, count: 64 * 1_024)
-        longRecord.append(desktopRecord)
+        var longRecord = Data("{\"content\":\"".utf8)
+        longRecord.append(Data(repeating: 0x78, count: 64 * 1_024))
+        longRecord.append(Data("\",\"entrypoint\":\"claude-desktop-3p\"}\n".utf8))
+        XCTAssertGreaterThan(longRecord.count, 64 * 1_024)
         try longRecord.write(to: limited)
         try desktopRecord.write(to: desktop)
 
         let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
         let independentCode = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
         let independentDesktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
-        XCTAssertEqual(paired.code.files, [limited])
-        XCTAssertEqual(paired.desktop.files, [desktop])
+        XCTAssertTrue(paired.code.files.isEmpty)
+        XCTAssertEqual(Set(paired.desktop.files), Set([limited, desktop]))
         XCTAssertEqual(paired.code.files, independentCode.files)
-        XCTAssertEqual(paired.desktop.files, independentDesktop.files)
-        XCTAssertTrue(paired.code.truncated); XCTAssertTrue(paired.desktop.truncated)
+        XCTAssertEqual(Set(paired.desktop.files), Set(independentDesktop.files))
+        XCTAssertFalse(paired.code.truncated); XCTAssertFalse(paired.desktop.truncated)
         XCTAssertEqual(paired.code.truncated, independentCode.truncated)
         XCTAssertEqual(paired.desktop.truncated, independentDesktop.truncated)
         XCTAssertEqual(paired.classificationCount, 2)
-        XCTAssertEqual(paired.classificationBytesRead, 64 * 1_024 + desktopRecord.count)
+        XCTAssertEqual(paired.classificationBytesRead, longRecord.count + desktopRecord.count)
     }
 
     func testClaudePairedDiscoveryKeepsIndependentTotalClassificationByteBudgets() throws {
@@ -163,8 +165,9 @@ final class MultiClientUsageParserTests: XCTestCase {
         let modified = Date(timeIntervalSince1970: 1_793_000_000)
         try record.write(to: file)
         let partial = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
-        XCTAssertEqual(partial.code.files, [file])
+        XCTAssertTrue(partial.code.files.isEmpty)
         XCTAssertTrue(partial.desktop.files.isEmpty)
+        XCTAssertTrue(partial.code.truncated); XCTAssertTrue(partial.desktop.truncated)
 
         let handle = try FileHandle(forWritingTo: file)
         try handle.seekToEnd(); try handle.write(contentsOf: Data([0x0A])); try handle.close()
@@ -172,6 +175,7 @@ final class MultiClientUsageParserTests: XCTestCase {
         let appended = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
         XCTAssertTrue(appended.code.files.isEmpty)
         XCTAssertEqual(appended.desktop.files, [file])
+        XCTAssertFalse(appended.code.truncated); XCTAssertFalse(appended.desktop.truncated)
 
         var rewritten = Data("{\"entrypoint\":\"cli\"}".utf8)
         rewritten.append(Data(repeating: 0x20, count: record.count - rewritten.count))
@@ -183,6 +187,116 @@ final class MultiClientUsageParserTests: XCTestCase {
         XCTAssertTrue(replaced.desktop.files.isEmpty)
         XCTAssertEqual(replaced.classificationCount, 1)
         XCTAssertEqual(replaced.classificationBytesRead, rewritten.count)
+    }
+
+    func testClaudeScannerReparsesSameSizeTailRewriteWithStablePrefixAndMtime() async throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-physical-witness-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let source = home.appendingPathComponent(".claude/projects/p/session.jsonl")
+        try fm.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let filler = String(repeating: "x", count: 6_000)
+        let text = "{\"entrypoint\":\"cli\",\"sessionId\":\"s\",\"type\":\"assistant\",\"timestamp\":\"2026-11-26T10:00:00Z\",\"message\":{\"id\":\"tail-edit\",\"model\":\"claude-opus\",\"content\":\"\(filler)\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":17}}}\n"
+        let original = Data(text.utf8)
+        XCTAssertGreaterThan(original.count, 4_096)
+        try original.write(to: source)
+
+        var code = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+        code.enabled = true
+        let scanner = MultiClientUsageScanner(databaseURL: home.appendingPathComponent("usage.sqlite"), home: home, environment: [:])
+        let first = try await scanner.scan([code], includesCharts: false)
+        XCTAssertEqual(first.summaries.first?.inputTokens, 1_000)
+        let ledger = try MultiClientUsageLedger(url: home.appendingPathComponent("usage.sqlite"))
+        let before = try SourceFileObservation.read(at: source)
+        let originalDate = try XCTUnwrap(fm.attributesOfItem(atPath: source.path)[.modificationDate] as? Date)
+        let oldRevisions = try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first
+        XCTAssertEqual(oldRevisions, 1)
+
+        let oldToken = Data("1000".utf8)
+        let newToken = Data("2000".utf8)
+        let tokenRange = try XCTUnwrap(original.range(of: oldToken))
+        XCTAssertGreaterThan(tokenRange.lowerBound, 4_096)
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.seek(toOffset: UInt64(tokenRange.lowerBound))
+        try handle.write(contentsOf: newToken)
+        try handle.close()
+        try fm.setAttributes([.modificationDate: originalDate], ofItemAtPath: source.path)
+        let afterRewrite = try SourceFileObservation.read(at: source)
+        XCTAssertNotEqual(before.physicalStamp, afterRewrite.physicalStamp)
+        XCTAssertEqual(before.size, afterRewrite.size)
+        XCTAssertEqual(before.modifiedAt, afterRewrite.modifiedAt, accuracy: 0.000001)
+
+        let second = try await scanner.scan([code], includesCharts: false)
+        XCTAssertEqual(second.summaries.first?.inputTokens, 2_000)
+        let after = try MultiClientUsageLedger(url: home.appendingPathComponent("usage.sqlite"))
+        let revised = try after.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first
+        XCTAssertEqual(revised, 2)
+        let checkpoint = try XCTUnwrap(after.checkpoint(client: .claudeCode, sourceKey: MultiClientUsageLedger.sourceKey(for: source)))
+        XCTAssertTrue(checkpoint.identity.contains("physical-v1:\(afterRewrite.physicalStamp)"))
+
+        _ = try await scanner.scan([code], includesCharts: false)
+        let stable = try after.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first
+        XCTAssertEqual(stable, 2)
+    }
+
+    func testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence() async throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-legacy-classifier-gate-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let cases: [(String, Data, String)] = [
+            ("other-client", jsonl([claudeLine(
+                session: "desktop-session", entrypoint: "claude-desktop-3p", id: "desktop-event",
+                timestamp: "2026-11-26T10:00:00Z", usage: ["input_tokens": 90]
+            )]), "归属与当前客户端不符"),
+            ("incomplete", Data("{\"entrypoint\":\"claude-desktop-3p\"}".utf8), "分类未完成"),
+        ]
+
+        for (name, sourceBytes, diagnostic) in cases {
+            let source = home.appendingPathComponent(name).appendingPathComponent("session.jsonl")
+            try fm.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try sourceBytes.write(to: source)
+            let attributes = try fm.attributesOfItem(atPath: source.path)
+            let size = Int64(sourceBytes.count)
+            let modified = try XCTUnwrap((attributes[.modificationDate] as? Date)?.timeIntervalSince1970)
+            let width = min(4_096, sourceBytes.count)
+            let prefixDigest = SHA256.hash(data: sourceBytes.prefix(width)).map { String(format: "%02x", $0) }.joined()
+            let rawIdentity = String(describing: attributes[.systemFileNumber] ?? "") + ":\(width):" + prefixDigest
+            // This is the prior scanner's completed checkpoint contract. It would
+            // have matched the file metadata and returned before entrypoint classification.
+            let legacyCheckpoint = MultiClientFileCheckpoint(
+                offset: size,
+                size: size,
+                modified: modified,
+                identity: "claude-cache-lifetimes-v1|" + rawIdentity
+            )
+            let databaseURL = home.appendingPathComponent("\(name).sqlite")
+            let ledger = try MultiClientUsageLedger(url: databaseURL)
+            let sourceKey = MultiClientUsageLedger.sourceKey(for: source)
+            let priorEvent = try XCTUnwrap(MultiClientUsageParsers.parse(
+                data: jsonl([claudeLine(
+                    session: "legacy-session", entrypoint: "cli", id: "legacy-\(name)",
+                    timestamp: "2026-11-26T09:00:00Z", usage: ["input_tokens": 40]
+                )]), client: .claudeCode, sessionHint: "legacy"
+            ).first)
+            _ = try ledger.ingest([priorEvent], client: .claudeCode, sourceKey: sourceKey, checkpoint: legacyCheckpoint)
+
+            var code = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+            code.enabled = true
+            code.path = source.path // Exercise the scanner even when discovery classifies another client.
+            let scanner = MultiClientUsageScanner(databaseURL: databaseURL, home: home, environment: [:])
+            let result = try await scanner.scan([code], includesCharts: false)
+
+            XCTAssertEqual(result.summaries.first?.inputTokens, 40, name)
+            XCTAssertTrue(result.diagnostics.contains { $0.contains(diagnostic) }, name)
+            let retained = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey), name)
+            XCTAssertEqual(retained.offset, legacyCheckpoint.offset, name)
+            XCTAssertEqual(retained.size, legacyCheckpoint.size, name)
+            XCTAssertEqual(retained.modified, legacyCheckpoint.modified, name)
+            XCTAssertEqual(retained.identity, legacyCheckpoint.identity, name)
+            XCTAssertNil(try ledger.checkpoint(client: .claudeDesktop, sourceKey: sourceKey), name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_events") { $0.int64(0) ?? 0 }.first, 1, name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first, 1, name)
+        }
     }
 
     func testClaudeScannerKeepsExplicitPathsExclusiveWhenBothClientsAreEnabled() async throws {
@@ -217,6 +331,52 @@ final class MultiClientUsageParserTests: XCTestCase {
             XCTAssertEqual(scanned.summaries.first { $0.client == .claudeDesktop }?.inputTokens, scenario.3)
             XCTAssertEqual(scanned.summaries.reduce(0) { $0 + $1.requests }, 2)
         }
+    }
+
+    func testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient() async throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-legacy-owner-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let source = home.appendingPathComponent(".claude/projects/p/session.jsonl")
+        try fm.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let sourceBytes = jsonl([claudeLine(
+            session: "desktop-session", entrypoint: "claude-desktop-3p", id: "desktop-event",
+            timestamp: "2026-11-26T10:00:00Z", usage: ["input_tokens": 90]
+        )])
+        try sourceBytes.write(to: source)
+
+        let ledger = try MultiClientUsageLedger(url: home.appendingPathComponent("usage.sqlite"))
+        let sourceKey = MultiClientUsageLedger.sourceKey(for: source)
+        let legacyEvent = try XCTUnwrap(MultiClientUsageParsers.parse(
+            data: jsonl([claudeLine(
+                session: "legacy-session", entrypoint: "cli", id: "legacy-event",
+                timestamp: "2026-11-26T09:00:00Z", usage: ["input_tokens": 40]
+            )]), client: .claudeCode, sessionHint: "legacy"
+        ).first)
+        let modified = try XCTUnwrap((try fm.attributesOfItem(atPath: source.path)[.modificationDate] as? Date)?.timeIntervalSince1970)
+        let oldCheckpoint = MultiClientFileCheckpoint(
+            offset: Int64(sourceBytes.count), size: Int64(sourceBytes.count), modified: modified, identity: "legacy-code"
+        )
+        _ = try ledger.ingest([legacyEvent], client: .claudeCode, sourceKey: sourceKey, checkpoint: oldCheckpoint)
+
+        var code = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+        var desktop = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeDesktop })
+        code.enabled = true
+        desktop.enabled = true
+        let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: home, environment: [:])
+        let result = try await scanner.scan([code, desktop], includesCharts: false)
+
+        XCTAssertEqual(result.summaries.first { $0.client == .claudeCode }?.inputTokens, 40)
+        XCTAssertNil(result.summaries.first { $0.client == .claudeDesktop })
+        XCTAssertTrue(result.diagnostics.contains { $0.contains("未完整完成") || $0.contains("归属与当前客户端不符") })
+        let preserved = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey))
+        XCTAssertEqual(preserved.offset, oldCheckpoint.offset)
+        XCTAssertEqual(preserved.size, oldCheckpoint.size)
+        XCTAssertEqual(preserved.modified, oldCheckpoint.modified)
+        XCTAssertEqual(preserved.identity, oldCheckpoint.identity)
+        XCTAssertNil(try ledger.checkpoint(client: .claudeDesktop, sourceKey: sourceKey))
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_events") { $0.int64(0) ?? 0 }.first, 1)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first, 1)
     }
 
     func testClaudeAccountRegistryRejectsUnsafeIDsDuplicatesOversizeAndLinks() throws {
@@ -544,7 +704,10 @@ final class MultiClientUsageParserTests: XCTestCase {
         XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(revised, client: .opencode, isDatabase: true), revised)
         XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .opencode), raw)
         XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .gemini, isDatabase: true), raw)
-        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .claudeCode), "claude-cache-lifetimes-v1|" + raw)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .claudeCode), "claude-entrypoint-v3|claude-cache-lifetimes-v1|" + raw)
+        let physical = MultiClientUsageParsers.checkpointIdentity(raw + "|physical-v1:dev:inode:ctime", client: .claudeCode)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointBaseIdentity(physical), "claude-entrypoint-v3|claude-cache-lifetimes-v1|" + raw)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointBaseIdentity(raw), raw)
     }
 
     func testOpenCodeSQLiteLegacyCompletedCheckpointReplaysOnceWithoutDuplicatingCachedEvents() async throws {

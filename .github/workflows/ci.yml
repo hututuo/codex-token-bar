@@ -232,8 +232,16 @@ jobs:
               --require testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor \
               --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
               --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
-              --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair -- \
-              swift test --filter 'MultiClientUsage|ClaudeTranscriptClassificationTests|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
+              --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
+              --require testClaudePairedDiscoveryClassifiesValidFirstRecordBeyond64KiB \
+              --require testClaudeScannerReparsesSameSizeTailRewriteWithStablePrefixAndMtime \
+              --require testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient \
+              --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
+              --require testCheckpointTransactionRejectsOppositeClaudeOwnerBeforeWriting \
+              --require testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction \
+              --require testLongLivedQuotaWriterRejectsFutureLedgerSchemaBeforeWriting \
+              --require testLongLivedSharedBodyWriterRejectsFutureLedgerSchemaBeforeWriting -- \
+              swift test --filter 'MultiClientUsage|ClientQuotaHistoryTests|BodySpeedTrendStoreTests|ClaudeTranscriptClassificationTests|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
             exit 0
           fi
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
@@ -275,7 +283,9 @@ jobs:
             --require testEmptyLedgerPeakQueriesKeepMeasuredBucketsUnallocated \
             --require testUnmeasuredRecordsKeepBucketsUnallocatedAndTotalsIntact \
             --require testNonoverlappingMeasuredRecordsKeepBucketsUnallocatedAndAverage \
-            --require testFirstMeasuredRecordAllocatesDenseBucketsAndPreservesMetrics \
+            --require testFirstMeasuredRecordAllocatesSparsePageAndPreservesMetrics \
+            --require testSparsePagedBucketsCrossPageGapsAndCopiesRemainIndependent \
+            --require recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback \
             --require testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches \
             --require testCopiesKeepFirstAllocationAndReplacementIndependent \
             --require testDayBoundariesAndWidenedDurationsPreservePeakDistribution \
@@ -318,6 +328,14 @@ jobs:
             --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
             --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
             --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
+            --require testClaudePairedDiscoveryClassifiesValidFirstRecordBeyond64KiB \
+            --require testClaudeScannerReparsesSameSizeTailRewriteWithStablePrefixAndMtime \
+            --require testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient \
+            --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
+            --require testCheckpointTransactionRejectsOppositeClaudeOwnerBeforeWriting \
+            --require testLongLivedQuotaWriterRejectsFutureLedgerSchemaBeforeWriting \
+            --require testLongLivedSharedBodyWriterRejectsFutureLedgerSchemaBeforeWriting \
+            --require testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
               --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \
@@ -533,6 +551,15 @@ jobs:
               --require claude_jsonl_usage_free_large_record_advances_without_fabricating_usage \
               --require claude_jsonl_keeps_normal_batch_boundary_when_prefix_has_line_feed \
               --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
+              --require stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes \
+              --require concurrent_b_initializers_serialize_schema_v2_initialization \
+              --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
+              --require long_claude_first_record_classifies_desktop_for_production_scanner \
+              --require opposite_claude_checkpoint_blocks_cross_namespace_reclassification \
+              --require existing_claude_checkpoint_cannot_skip_reclassification \
+              --require claude_physical_witness_reparses_same_size_tail_rewrite \
+              --require background_claude_diagnostics_reach_reads_and_clean_scan_clears_them \
+              --require recent_claude_diagnostics_are_deduplicated_and_bounded \
               -- \
               cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_ -- --test-threads=1
           else
@@ -635,6 +662,20 @@ jobs:
               --require diagnostic_collector_ignores_exclusive_sqlite_lock \
               --require diagnostic_restart_retains_prior_failed_session \
               --require diagnostic_timeout_is_bounded_and_partial_zip_is_valid \
+              --require stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes \
+              --require concurrent_b_initializers_serialize_schema_v2_initialization \
+              --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
+              --require future_b_schema_refuses_quota_history_before_optional_ddl_or_dml \
+              --require future_shared_usage_schema_refuses_activity_ddl_prune_and_sample_writes \
+              --require future_b_schema_refuses_body_speed_schema_and_sample_writes \
+              --require future_b_schema_refuses_legacy_json_import_before_backup_or_rows \
+              --require scoped_store_physical_user_version_reads_container_header \
+              --require long_claude_first_record_classifies_desktop_for_production_scanner \
+              --require opposite_claude_checkpoint_blocks_cross_namespace_reclassification \
+              --require existing_claude_checkpoint_cannot_skip_reclassification \
+              --require claude_physical_witness_reparses_same_size_tail_rewrite \
+              --require background_claude_diagnostics_reach_reads_and_clean_scan_clears_them \
+              --require recent_claude_diagnostics_are_deduplicated_and_bounded \
               --require panic_guard_notifies_an_already_waiting_cold_reader -- \
               cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1
           fi

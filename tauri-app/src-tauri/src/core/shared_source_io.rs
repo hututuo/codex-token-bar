@@ -50,7 +50,47 @@ struct BlockKey {
 /// bounded read across concurrent atomic source rotation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourceFileWitness(FileStamp);
-pub(crate) fn source_file_witness(file:&File)->io::Result<SourceFileWitness> {
+impl SourceFileWitness {
+    /// Stable, explicit representation for persisted source checkpoints. Keep
+    /// platform-specific fields numeric and avoid relying on Debug formatting.
+    pub(crate) fn checkpoint_key(self) -> String {
+        #[cfg(unix)]
+        {
+            format!(
+                "{}:{}:{}:{}:{}",
+                self.0.identity.device,
+                self.0.identity.inode,
+                self.0.len,
+                self.0.modified,
+                self.0.changed
+            )
+        }
+        #[cfg(windows)]
+        {
+            let file_id = self
+                .0
+                .identity
+                .file_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!(
+                "{}:{}:{}:{}:{}",
+                self.0.identity.volume,
+                file_id,
+                self.0.len,
+                self.0.modified,
+                self.0.changed
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            format!("{}:{}:{}:{}", self.0.identity.unsupported, self.0.len, self.0.modified, self.0.changed)
+        }
+    }
+}
+
+pub(crate) fn source_file_witness(file: &File) -> io::Result<SourceFileWitness> {
     file_stamp(file).map(SourceFileWitness)
 }
 

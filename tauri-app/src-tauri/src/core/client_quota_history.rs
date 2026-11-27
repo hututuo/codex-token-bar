@@ -99,11 +99,10 @@ pub(crate) fn record_history(
     if !now.is_finite() {
         return Err("当前时间无效".into());
     }
-    ensure_schema(connection).map_err(|error| error.to_string())?;
     let cutoff = now - HISTORY_SECONDS;
-    let transaction = connection
-        .unchecked_transaction()
+    let transaction = super::multi_client_usage::begin_b_write_transaction(connection)
         .map_err(|error| error.to_string())?;
+    ensure_schema(&transaction).map_err(|error| error.to_string())?;
     let mut observations = Vec::new();
     for reading in readings {
         if !valid_record_state(&reading.state) || !valid_client(&reading.client) {
@@ -433,6 +432,28 @@ mod tests {
             )
             .unwrap();
         connection
+    }
+
+    #[test]
+    fn future_b_schema_refuses_quota_history_before_optional_ddl_or_dml() {
+        let connection = open_schema_two_without_history();
+        connection.pragma_update(None, "user_version", 3_i64).unwrap();
+        let reading = reading(
+            "claudeDesktop",
+            "local-desktop-history",
+            "available",
+            Some(timestamp(1_000)),
+            10.0,
+        );
+        let error = record_history(&connection, &[reading], 2_000.0).unwrap_err();
+        assert!(error.contains("高于此程序支持的版本"));
+        assert!(!table_exists(&connection).unwrap());
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
     }
 
     fn reading(

@@ -1,12 +1,12 @@
 # 性能、多客户端与数据库兼容性验收
 
-更新日期：2026-11-27（Asia/Shanghai）。当前生产候选包括 `03ee0bac` 的去重表首次使用再预留及精确定价索引存储压缩；文档提交 `d14aa7afac59a80d7320d868b971a44396438129` 的云端 Swift 出现一处新增测试断言错误，已修正字典大写 key 的预期，待新提交独立云端验证。最近完整 CI 全部通过并独立闭合的源码为 `f59bc14f25c3d27c722abd4c12f2f987341a29fc`；正在执行的整 App 配对也锁定此源码，harness 为 `fcddaf1bbba1e94576fd04c3531a99f3151c2f68`。最近完整接受的整 App 结果仍为 `665efddf`；最近完成速度引擎配对的源码为 `4410b16bbf182b90bb6cface265f698182a61039`。三个目标继续保持 active。
+更新日期：2026-11-27（Asia/Shanghai）。最近完整 CI 成功源码为 `9e350c92b1e0183eb4a6907ca0570a46a029e308`（run `45933441364`）；最近整 App 配对仍是 `f59bc14f25c3d27c722abd4c12f2f987341a29fc`（run `45921100543`，harness `fcddaf1bbba1e94576fd04c3531a99f3151c2f68`）。20k workload 的 CPU、RSS、physical footprint 分别下降 42.33%、7.81%、6.76%，均未减半。当前续查工作树以 `b152cfe300a13b0072a922d09a48a7c693ab6f8b` 为 HEAD，包含未提交候选改动；该候选尚未云端编译、全量回归或配对测量。三个目标继续保持 active。
 
 ## 验收状态
 
 | 目标 | 已完成的工作 | 尚未通过的门槛 |
 | --- | --- | --- |
-| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制；离场/暂停动效帧缓存回收；邀请视频资源延迟创建；空日账本密集数组延迟分配；去重表和精确定价索引压缩 | a416/a605/4410/ff55因首对窗口不同而整轮失败；665 v2首次完整通过12单轮/6配对，20k CPU下降39.53%、footprint下降6.77%，2k分别下降11.54%/2.27%；6f54因跨本地日整组NOT_RUN；均无减半结论，后续候选待测 |
+| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制；离场/暂停动效帧缓存回收；邀请视频资源延迟创建；稀疏日账本页；去重表和精确定价索引压缩 | 最新完整整 App 配对 `45921100543`（f59，12/12单轮、6/6配对）：20k CPU下降42.33%、RSS下降7.81%、physical footprint下降6.76%；均未减半。当前 `b152cfe3` 基线上的未提交稀疏页/cache修剪候选尚未配对 |
 | 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；f59完整双平台原生回归及真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；Desktop长首条分类与历史归属；真实客户端与安装运行验收 |
 | 数据库结构与后续兼容 | 聚合复用单次TEMP canonical projection；缓存revision修复；两端schema admission和旧payload合并修复；Swift显式列名写入；ff55四版本×双平台增强矩阵8/8通过，64次候选进程及64次强制重扫保全事件/revision；生产聚合独立复算至ff55 | 当前产品SHA的完整回归尚待云端；不是任意未来schema的无损写回承诺 |
 
@@ -15,6 +15,12 @@
 原始 Claude 隔离账号漏计修复已另行安装并验收：build1061、源码 `05e059ba09181bf4a97026dda47470d5ee6551e2`，生产 importer 找回全部2008次请求、263,914,258个含cache输入token。整个隔离账号集合2083次请求、289,842,334输入token及102个checkpoint均在账；未发现既有事件丢失、计数降低或pending请求。见 `docs/maintenance/2026-11-27-claude-account-usage-discovery.md`。此安装结果不能外推为后续性能优化已安装。
 
 ## 本次增量
+
+### Claude checkpoint 物理变更失效修复（当前未提交候选）
+
+- Swift 和 Rust 的 Claude JSONL checkpoint 快速路径现在把已有的物理文件 witness 纳入 identity：macOS/Linux 使用设备、inode、长度、mtime 纳秒和 ctime 纳秒；Windows 使用 volume/file-id、长度、last-write/change 时间。Claude checkpoint contract 提升到 `v3`，旧 `v2` checkpoint 会自动完整重扫一次，不需要数据库 schema 迁移。
+- 这覆盖了此前遗漏的边界：文件在前 4 KiB 之后原地改写，同时保持文件大小、mtime 和前缀摘要不变时，旧逻辑会直接跳过分类和正文读取；新逻辑会重新分类、从安全位置重读并通过原有事件 ID 合并更新。纯追加仍按逻辑前缀从旧 offset 继续，不因 ctime 变化退回全文件重扫。
+- Swift/Rust 各新增同大小、同前缀、恢复 mtime 的尾部改写回归；CI 的 Claude focused 和完整 Rust/Swift required 列表已加入对应测试。当前只完成源码审查、静态轻量检查和 diff 检查，尚未在本机编译，也尚未取得包含这批未提交改动的云端 CI 结果。
 
 ### 数据库：`db97ce32`
 
@@ -268,7 +274,7 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 
 该run的whole-App小证据已完成有界复核：artifact `15167602203`（29,555,083B，GitHub digest `sha256:a70e1498f92852388c95579d6f28ca692e60db90a1a5e7ebf090db3f14a4b72c`），candidate `f59bc14f`、whole-App baseline `f9e91791`、harness `fcddaf1b`。12个trial全部有121/122个measurement samples，所有6个pair的CPU、physical footprint和RSS均优于或等于baseline；这只证明本固定静态Claude+默认Codex主进程视口下的配对结果。vmmap、heap、referenceTree各12/12返回0；referenceTree按每个allocation猜一个parent，不能证明无泄漏或完整保留路径。报告及重算哈希保存在忽略目录 `current-resource-review/run45921100543-whole-app-review.{json,md}`、`run45921100543-whole-app-small-retention-recomputed.json` 和 `range-read-retained-graph.json`。
 
-当前候选 `9e350c92` 已将 Swift/Rust Claude 首条记录分类器统一到 `claude-entrypoint-v2`：64KiB快速路径、16MiB总预算、跨运行时共同127层容器上限；超限返回 typed `nestingLimit`，不会在下一行或EOF回退CLI。物理文件替换/追加仍拒绝，完整JSON语义校验保留。它仍是未接入发现/账本的候选工具，不是历史漏记修复；7b6的旧来源完整CI已独立PASS，9e350c92的新分类器云端CI正在执行。
+当前候选 `9e350c92` 已将 Swift/Rust Claude 首条记录分类器统一到 `claude-entrypoint-v2`：64KiB快速路径、16MiB总预算、跨运行时共同127层容器上限；超限返回 typed `nestingLimit`，不会在下一行或EOF回退CLI。物理文件替换/追加仍拒绝，完整JSON语义校验保留。源码 `9e350c92b1e0183eb4a6907ca0570a46a029e308` 的完整云端 CI `45933441364` 与公开0.9.7升级 `45933441318` 均成功：Swift 2641/0、Rust macOS 1898/0、Rust Windows 1840/0、前端1501/0；分类深度与 Claude boundary 专项证据也闭合。它仍是未接入发现/账本的候选工具，不是历史漏记修复；后续安全接入需要 receipt/admission 状态、旧账冲突保全和公平分类预算，不能据此重分类已有账目。
 
 ## 已安装程序的只读观测
 
@@ -292,8 +298,8 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 
 - 多 root 是本地源覆盖，不是已验证的 provider account 身份。当前 ledger 没有 per-account 归属列，不能据此承诺逐账号费用归因。
 - Claude 仅支持实际落地的本地 Code/Agent transcript；普通 cloud-only 对话不可读。Claude 仍明确排除外部 speed reporting。
-- Claude 历史Swift/Rust的JSONL完整record含LF上限在267aa5e8源码扩展至16MiB，原4MiB normal batch保留；267完整CI的两端边界测试已实际通过。超过16MiB会保留断点并阻塞后继行，不能把它描述为与live的32MiB内容上限一致。macOS live读取块4MiB；Windows普通文件live读取块1MiB、注入backend的请求上限4MiB。历史文件最初64KiB内没有完整entrypoint-bearing行时，还存在Desktop分类不完整的独立边界。新源码及合成测试不代表解决16–32MiB或Desktop分类上限，原视频漏计的已确认根因仍为隔离账号目录未覆盖。
-- 已用源码和纯Python合成反例进一步分清Desktop分类缺口：无短header且首条含LF恰为65,537B时回退CLI；显式Desktop usage被拒绝而漏计，后继省略entrypoint的usage才可能误归CLI。现有Swift大记录fixture固定CLI显式path、Rust Desktop fixture先写短header，不能证明此反例已兼容。修复还需处理Swift总64MiB分类预算的公平进度、线性delimiter扫描、旧EOF checkpoint契约迁移，以及events无source provenance时旧CLI错账的保全；直接扩常量或replay可能造成漏扫/跨namespace双计。调查文件为忽略目录 `current-resource-review/claude-classifier-boundary-investigation.md`；没有读取真实transcript或声明受影响规模，尚未修改生产分类行为。
+- Claude 历史Swift/Rust的JSONL完整record含LF上限在267aa5e8源码扩展至16MiB，原4MiB normal batch保留；267完整CI的两端边界测试已实际通过。超过16MiB会保留断点并阻塞后继行，不能把它描述为与live的32MiB内容上限一致。macOS live读取块4MiB；Windows普通文件live读取块1MiB、注入backend的请求上限4MiB。分类器现在统一使用 `claude-entrypoint-v2`，首条记录分类上限16MiB，未完成分类不推进断点。
+- 生产扫描已接入三态 Claude 分类，并在扫描前后保留物理文件 witness；已有另一客户端 checkpoint 的逻辑路径不自动重分类，旧事件、revision 和 checkpoint 保留，冲突通过诊断暴露。该保护只解决未来扫描的双计风险，不能追溯修正旧 CLI 错账；因为现有事件没有 source provenance，跨 namespace reconciliation 仍需独立 schema 设计。原视频漏计的已确认根因仍为隔离账号目录未覆盖。
 - 现有 checkpoint 只有 source 最终游标，revision 只有规范化 payload 和捕获时间，无法证明旧 CLI 隐式条目的文件或字节范围。后续分类修复应先保全旧账并把冲突重放放入 pending；若要正式激活可逆跨 namespace 归属，需要带 source generation/range 的 observations、append-only attribution action、统一 effective-events CTE、action generation cache stamp，并将改变数字的读写格式升级为 schema 3 使旧 reader fail-closed。候选设计见忽略目录 `current-resource-review/claude-attribution-provenance-options.md`，当前未改 schema 或历史数据。
 - quota 来自各客户端自己的本地观测与 freshness 规则，不因路径同属一个账号目录就获得当前登录账号绑定证明。
 - schema 2 接受必需字段集合的兼容扩展；显式列名解决 nullable 追加列写入。新增 NOT NULL/无默认值列、任意新约束及未知 JSON 键的重编码无损性不在此保证内。未来影响写入或用量语义的格式应增加 schema version，使旧程序拒绝，而不能仅追加字段后假设旧程序能无损写回。
@@ -301,3 +307,14 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 - whole-app harness只测主进程、静态Claude单源后台采集及默认Codex dashboard，不覆盖Claude/汇总图表UI、helper总CPU、hidden/sidebar、切图retention、多Home、live replay、带账号quota或Windows整App。v2另增加完整屏幕内视口gate；无GUI或ready/ledger/window gate不通过记为NOT_RUN，不降级成局部测试冒充通过。
 
 目标继续保持 active；已接受的665整App配对尚未达到CPU或内存减半，不能用局部引擎降幅、估计分配节省或其他SHA的结果代替当前整App验收。
+
+## 2026-11-27 接手续查（未提交候选）
+
+- `DayLedger` 将两组 25 小时 `Double` 秒桶改为 256 秒按需页；峰值扫描跳过空页。保留逐秒钳位顺序、容量边界、连续页窗口和值复制隔离。`SpeedEngine` 在窗口前进时清除过期排序缓存页，权威响应和全天账本仍保留，时钟回拨时重建缓存。
+- Swift ledger、quota、BodySpeed 事务及 Rust B 账本、quota、activity-speed、BodySpeed、metadata 写入口加入 writer-lock 内的 schema 版本重验；初始化迁移也在 immediate transaction 内重读版本。AgentSpeed 来源锁按固定上游 SHA `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c` 更新，并通过离线与 pinned checkout 检查。
+- 只读审查发现 BodySpeed 生产 `StoreConnection` 会将普通 `PRAGMA user_version` 映射到逻辑模块元数据，而 B 的 schema 版本属于 SQLite 文件头。现增加 `physical_user_version()` 绕过逻辑投影，迁移及写入守卫在持有 immediate writer lock 时调用，并新增 scoped connection 测试与 CI 必跑项。该修复尚待云端实际编译和生产路径回归。
+- Claude Desktop 首条超长记录分类已接入候选生产扫描。Swift/Rust 现在只信任带当前 `claude-entrypoint-v3` 契约且物理 witness 完全匹配的 unchanged checkpoint；旧契约 checkpoint 必须重新分类。分类未完成、识别为另一客户端或检测到源变化时不写事件、不推进断点；既有 opposite-client checkpoint 保持权威。Swift 新增旧 checkpoint 的 other-client/incomplete 两种保全回归，Rust 覆盖不完整证据、归属冲突、有效新 checkpoint 快速跳过及同尺寸尾部覆写。
+- Rust 后台扫描诊断之前会随扫描返回值被调度器丢弃，冷却期读取也不会重现。现将 Claude 诊断缓存为有界内存快照，每次完成扫描替换、无告警扫描清除、偏好变化清空，并在后续 UI-facing read 附加；其他客户端诊断不暂存。两项状态测试覆盖可见性、清除、过滤、去重和容量上限。
+- AgentSpeed 新增部分过期 response view 的计数和时钟回拨重建回归。此 view 仍从权威响应账本重建；日账本稀疏页只在时间桶稀疏时显著节省，满日负载仍接近原始两条密集数组容量。该项尚无独立整 App 收益测量。
+- 轻量验证：完整 `scripts/tests` 140 项通过；本轮再次确认 `test_*gate.py` 31 项、AgentSpeed vendor 18 项通过；Ruby workflow YAML 解析和 `git diff --check` 通过。新增原生测试已加入 CI 必跑名单。没有运行 SwiftPM、Cargo、Xcode、前端构建或原生测试。rustfmt 全文件检查命中大量既有格式差异，未对无关文件批量重排。
+- 当前候选未提交、未推送、未发布。此前 f59 整 App 配对仍是最新可用整 App 证据；上述稀疏页和 cache 修剪没有新的 CPU/RSS/physical-footprint 实测，不能据实现或静态容量推算宣称已达目标。

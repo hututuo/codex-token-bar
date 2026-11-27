@@ -304,6 +304,10 @@ struct EngineBehaviorTests {
             engine.upsert(Self.record("old-\(index)", start: end - 1000, end: end, output: 1),
                           project: "p", isCompletion: true, emitsEvents: false)
         }
+        let initial = engine.advance(nowMs: end, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1000)
+        #expect(initial.today.requests == 1000)
+
         let later = engine.advance(nowMs: end + 2 * SpeedEngine.retentionMs, todayStartMs: Self.base, emitsEvents: false)
         #expect(later.today.requests == 1000)
         #expect(later.today.output == 1000)
@@ -314,7 +318,33 @@ struct EngineBehaviorTests {
         let rolledBack = engine.advance(nowMs: end + 1000, todayStartMs: Self.base, emitsEvents: false)
         #expect(engine.cachedTimedResponseCount == 1000)
         #expect(rolledBack.today == later.today)
+        #expect(initial.today == later.today)
         #expect(abs(rolledBack.live.output - 1000.0 / 3) < 1e-9)
+    }
+
+    @Test func recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback() {
+        var engine = SpeedEngine()
+        let now = Self.base + 4 * 3_600_000
+        let firstEnd = now - SpeedEngine.retentionMs
+        for index in 0..<1_200 {
+            let end = firstEnd + Int64(index) * 1_000
+            engine.upsert(Self.record("aging-\(index)", start: end - 1_000, end: end, output: 1),
+                          project: "p", isCompletion: true, emitsEvents: false)
+        }
+
+        let initial = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1_200)
+        #expect(initial.today.requests == 1_200)
+
+        let advanced = engine.advance(nowMs: now + 600_000, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 600)
+        #expect(advanced.today.requests == 1_200)
+        #expect(advanced.today.output == 1_200)
+
+        let rolledBack = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1_200)
+        #expect(rolledBack.today == initial.today)
+        #expect(rolledBack.live == initial.live)
     }
 
     @Test func responseReplacementMovesIntoAndOutOfTheRecentView() {

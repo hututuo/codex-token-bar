@@ -52,6 +52,9 @@ final class BodySpeedDatabase: @unchecked Sendable {
 
     func transaction<T>(_ body: (BodySpeedDatabaseConnection) throws -> T) throws -> T {
         try driver.transaction { connection in
+            if prefix != nil {
+                try MultiClientUsageLedger.requireSupportedWriteSchema(in: connection)
+            }
             try body(BodySpeedDatabaseConnection(connection, prefix: prefix, objectNames: objectNames))
         }
     }

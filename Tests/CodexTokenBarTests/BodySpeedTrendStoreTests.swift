@@ -101,6 +101,32 @@ final class BodySpeedTrendStoreTests: XCTestCase {
         XCTAssertEqual(points[0].tokensPerSecond, 50)
     }
 
+    func testLongLivedSharedBodyWriterRejectsFutureLedgerSchemaBeforeWriting() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let logicalURL = directory.appendingPathComponent("A/body-speed-codex.sqlite")
+        let sharedURL = directory.appendingPathComponent("B/multi-client-usage.sqlite")
+        try FileManager.default.createDirectory(at: logicalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let database = try BodySpeedDatabase(logicalURL: logicalURL, sharedURL: sharedURL)
+        let store = try BodySpeedTrendStore(url: logicalURL, sharedURL: sharedURL)
+        let peer = SQLiteDatabaseDriver(url: sharedURL, bypassBusinessRoutes: true)
+        try peer.execute("PRAGMA user_version=99")
+
+        let sample = body(id: "future-version", model: "model-a", endedAt: 1_900_000_060, tokens: 100, duration: 2)
+        XCTAssertThrowsError(try store.ingest(samples: [sample], now: 1_900_000_060)) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .newerSchema(let version) = ledgerError else {
+                return XCTFail("Expected the transaction-time future-schema refusal, got \(error)")
+            }
+            XCTAssertEqual(version, 99)
+        }
+        XCTAssertEqual(try database.readRows("SELECT COUNT(*) FROM speed_samples") { $0.int(0) }.first!, 0)
+        XCTAssertEqual(try database.readRows("SELECT COUNT(*) FROM speed_sample_ids") { $0.int(0) }.first!, 0)
+        XCTAssertEqual(try database.readRows("SELECT COUNT(*) FROM speed_5m") { $0.int(0) }.first!, 0)
+        XCTAssertEqual(try peer.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
+    }
+
     private func makeStore() throws -> (BodySpeedTrendStore, URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

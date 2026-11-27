@@ -285,7 +285,27 @@ struct SpeedEngine: Sendable {
 
     private mutating func refreshResponseViewsIfNeeded(nowMs: Int64) {
         let cutoff = nowMs - Self.retentionMs
-        if !responseViewsDirty, let responseViewCutoffMs, cutoff >= responseViewCutoffMs { return }
+        if !responseViewsDirty, let responseViewCutoffMs, cutoff >= responseViewCutoffMs {
+            guard let last = sortedTimedResponses.last, last.endMs < cutoff else { return }
+            var retainedCount = 0
+            var high = sortedTimedResponses.count
+            while retainedCount < high {
+                let middle = retainedCount + (high - retainedCount) / 2
+                if sortedTimedResponses[middle].endMs >= cutoff {
+                    retainedCount = middle + 1
+                } else {
+                    high = middle
+                }
+            }
+            if retainedCount == 0 {
+                // Once every cached response is outside the live window, release its backing buffer.
+                sortedTimedResponses.removeAll(keepingCapacity: false)
+            } else {
+                sortedTimedResponses.removeSubrange(retainedCount..<sortedTimedResponses.count)
+            }
+            self.responseViewCutoffMs = cutoff
+            return
+        }
         var ends: [String: Int64] = [:]
         var timed: [CachedTimedResponse] = []
         for storage in responses.values {

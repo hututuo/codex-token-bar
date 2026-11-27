@@ -3,8 +3,9 @@ import Foundation
 
 /// A cheap invalidation hint shared by the snapshot cache and the exact index.
 /// Physical identity comes from stat/fstat; rollout size addresses decoded bytes.
-/// Physical identity is not a ledger identity and is not proof of new usage.
-struct SourceFileObservation {
+/// Physical identity is only a checkpoint invalidation witness; it is not an
+/// event/ledger identity and is not proof of new usage.
+struct SourceFileObservation: Sendable {
     let size: UInt64
     let modifiedAt: TimeInterval
     let physicalStamp: String

@@ -1,5 +1,48 @@
 import Foundation
 
+/// Sparse fixed-index second buckets. Pages are allocated only when a
+/// measured response touches them; missing seconds remain exact zeroes.
+private struct PagedDoubleBuckets: Sendable {
+    static let pageSize = 256
+
+    private let capacity: Int
+    private var pages: [[Double]?]
+    private(set) var allocatedValueCount = 0
+
+    init(capacity: Int) {
+        self.capacity = capacity
+        pages = Array(repeating: nil, count: (capacity + Self.pageSize - 1) / Self.pageSize)
+    }
+
+    var isAllocated: Bool { allocatedValueCount > 0 }
+
+    mutating func add(_ delta: Double, at index: Int) {
+        guard index >= 0, index < capacity else { return }
+        let pageIndex = index / Self.pageSize
+        let start = pageIndex * Self.pageSize
+        if pages[pageIndex] == nil {
+            let count = min(Self.pageSize, capacity - start)
+            pages[pageIndex] = Array(repeating: 0, count: count)
+            allocatedValueCount += count
+        }
+        let offset = index - start
+        pages[pageIndex]![offset] = max(0, pages[pageIndex]![offset] + delta)
+    }
+
+    func forEachAllocatedPage(pairedWith other: Self,
+                              _ body: (_ start: Int, _ values: [Double], _ otherValues: [Double]) -> Void) {
+        precondition(capacity == other.capacity)
+        for pageIndex in pages.indices {
+            let values = pages[pageIndex]
+            let otherValues = other.pages[pageIndex]
+            precondition((values == nil) == (otherValues == nil))
+            guard let values, let otherValues else { continue }
+            precondition(values.count == otherValues.count)
+            body(pageIndex * Self.pageSize, values, otherValues)
+        }
+    }
+}
+
 /// Today's totals, average and per-second measured history (METRICS 6.6).
 struct DayLedger: Sendable {
     /// Covers the longest local day (25 hours on a DST change).
@@ -18,10 +61,9 @@ struct DayLedger: Sendable {
     private var validOutput = 0
     private var validDurationMs: Int64 = 0
     // Empty and unmeasured sources do not need 25 hours of second buckets.
-    // Allocate on the first overlapping measured interval, then retain the
-    // original dense representation and arithmetic for the rest of the day.
-    private var outputBuckets: [Double] = []
-    private var totalBuckets: [Double] = []
+    // Measured seconds allocate 256-second pages, not two dense 25-hour arrays.
+    private var outputBuckets: PagedDoubleBuckets
+    private var totalBuckets: PagedDoubleBuckets
     private var cachedPeak: MeasuredPeak?
     private var sourceSeconds: SourceSeconds
 
@@ -34,6 +76,8 @@ struct DayLedger: Sendable {
     init(dayStartMs: Int64) {
         self.dayStartMs = dayStartMs
         firstSecond = ResponseTiming.second(of: dayStartMs)
+        outputBuckets = PagedDoubleBuckets(capacity: Self.capacitySeconds)
+        totalBuckets = PagedDoubleBuckets(capacity: Self.capacitySeconds)
         sourceSeconds = SourceSeconds(firstSecond: firstSecond, capacity: Self.capacitySeconds)
     }
 
@@ -66,20 +110,14 @@ struct DayLedger: Sendable {
         let lastSecond = firstSecond + Int64(Self.capacitySeconds) - 1
         let factor = Double(sign)
         let base = firstSecond
-        if outputBuckets.isEmpty {
+        if !outputBuckets.isAllocated {
             guard ResponseTiming.overlap(base * 1000, (lastSecond + 1) * 1000,
                                          timed.startMs, timed.endMs) > 0 else { return }
-            outputBuckets = Array(repeating: 0, count: Self.capacitySeconds)
-            totalBuckets = Array(repeating: 0, count: Self.capacitySeconds)
         }
-        outputBuckets.withUnsafeMutableBufferPointer { outputs in
-            totalBuckets.withUnsafeMutableBufferPointer { totals in
-                timed.distribute(firstSecond: base, lastSecond: lastSecond) { second, output, total in
-                    let index = Int(second - base)
-                    outputs[index] = max(0, outputs[index] + factor * output)
-                    totals[index] = max(0, totals[index] + factor * total)
-                }
-            }
+        timed.distribute(firstSecond: base, lastSecond: lastSecond) { second, output, total in
+            let index = Int(second - base)
+            outputBuckets.add(factor * output, at: index)
+            totalBuckets.add(factor * total, at: index)
         }
         cachedPeak = nil
         sourceSeconds.apply(timed, source: record.source, sign: sign)
@@ -89,24 +127,32 @@ struct DayLedger: Sendable {
     mutating func measuredPeak() -> MeasuredPeak {
         if let cachedPeak { return cachedPeak }
         var peak = MeasuredPeak()
-        guard !outputBuckets.isEmpty else {
+        guard outputBuckets.isAllocated else {
             cachedPeak = peak
             return peak
         }
         var outputs = (0.0, 0.0)
         var totals = (0.0, 0.0)
-        for index in 0..<Self.capacitySeconds {
-            let output = outputBuckets[index]
-            let total = totalBuckets[index]
-            let outputAverage = (outputs.0 + outputs.1 + output) / 3
-            let totalAverage = (totals.0 + totals.1 + total) / 3
-            if outputAverage > peak.output {
-                peak.output = outputAverage
-                peak.outputAtMs = (firstSecond + Int64(index) + 1) * 1000
+        var nextIndex = 0
+        outputBuckets.forEachAllocatedPage(pairedWith: totalBuckets) { start, outputPage, totalPage in
+            if start != nextIndex {
+                outputs = (0, 0)
+                totals = (0, 0)
             }
-            if totalAverage > peak.total { peak.total = totalAverage }
-            outputs = (outputs.1, output)
-            totals = (totals.1, total)
+            for offset in outputPage.indices {
+                let output = outputPage[offset]
+                let total = totalPage[offset]
+                let outputAverage = (outputs.0 + outputs.1 + output) / 3
+                let totalAverage = (totals.0 + totals.1 + total) / 3
+                if outputAverage > peak.output {
+                    peak.output = outputAverage
+                    peak.outputAtMs = (firstSecond + Int64(start + offset) + 1) * 1000
+                }
+                if totalAverage > peak.total { peak.total = totalAverage }
+                outputs = (outputs.1, output)
+                totals = (totals.1, total)
+            }
+            nextIndex = start + outputPage.count
         }
         cachedPeak = peak
         return peak
@@ -120,8 +166,8 @@ struct DayLedger: Sendable {
     /// Sources that have per-second buckets today.
     var sourcesWithBuckets: SourceSet { sourceSeconds.allocated }
 
-    /// Number of allocated all-source second buckets, excluding source subsets (tests).
-    var measuredBucketCount: Int { outputBuckets.count + totalBuckets.count }
+    /// Allocated all-source bucket slots across both lanes, excluding source subsets (tests).
+    var measuredBucketCount: Int { outputBuckets.allocatedValueCount + totalBuckets.allocatedValueCount }
 
     /// Subset peaks computed rather than answered from the cache, and the blocks they scanned (tests).
     var subsetPeakScans: Int { sourceSeconds.peakScans }

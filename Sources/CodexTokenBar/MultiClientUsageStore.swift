@@ -91,6 +91,8 @@ actor MultiClientUsageScanner {
         let ledger = try open()
         var diagnostics: [String] = []
         scanNotices = []
+        let claudeCheckpointOwners = try ledger.claudeCheckpointOwners()
+        var claudeClassificationBytesRemaining = 64 * 1_024 * 1_024
         var entries: [(UsageClient, URL)] = []
         let sharesClaudeDiscovery = enabled.contains { $0.client == .claudeCode && $0.path.isEmpty }
             && enabled.contains { $0.client == .claudeDesktop && $0.path.isEmpty }
@@ -104,11 +106,20 @@ actor MultiClientUsageScanner {
             } else if preference.path.isEmpty {
                 let discovery: MultiClientUsageDiscovery.Result
                 if sharesClaudeDiscovery, preference.client == .claudeCode || preference.client == .claudeDesktop {
-                    let paired = claudeDiscovery ?? MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: environment)
+                    let paired = claudeDiscovery ?? MultiClientUsageDiscovery.discoverClaudePair(
+                        home: home,
+                        environment: environment,
+                        claudeCheckpointOwners: claudeCheckpointOwners
+                    )
                     claudeDiscovery = paired
                     discovery = preference.client == .claudeCode ? paired.code : paired.desktop
                 } else {
-                    discovery = MultiClientUsageDiscovery.discover(client: preference.client, home: home, environment: environment)
+                    discovery = MultiClientUsageDiscovery.discover(
+                        client: preference.client,
+                        home: home,
+                        environment: environment,
+                        claudeCheckpointOwners: claudeCheckpointOwners
+                    )
                 }
                 files = discovery.files
                 if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现未完整完成，部分目录或记录未读取；当前不是完整历史") }
@@ -130,7 +141,16 @@ actor MultiClientUsageScanner {
                 for step in 0..<count {
                     if Task.isCancelled { break }
                     let (client, url) = entries[(start + step) % entries.count]
-                    do { try autoreleasepool { try ingestFile(url, client: client, ledger: ledger) } }
+                    do {
+                        try autoreleasepool {
+                            try ingestFile(
+                                url,
+                                client: client,
+                                ledger: ledger,
+                                claudeClassificationBytesRemaining: &claudeClassificationBytesRemaining
+                            )
+                        }
+                    }
                     catch { diagnostics.append("\(client.displayName)：部分日志读取失败，已保留旧账（\(error.localizedDescription)）") }
                 }
             }
@@ -253,13 +273,32 @@ actor MultiClientUsageScanner {
         return (result.sorted { $0.path < $1.path }, truncated)
     }
 
-    private func ingestFile(_ url: URL, client: UsageClient, ledger: MultiClientUsageLedger) throws {
+    private func ingestFile(
+        _ url: URL,
+        client: UsageClient,
+        ledger: MultiClientUsageLedger,
+        claudeClassificationBytesRemaining: inout Int
+    ) throws {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attrs[.type] as? FileAttributeType == .typeRegular else { return }
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         var modified = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         var identity = String(describing: attrs[.systemFileNumber] ?? "")
-        let key = SHA256.hash(data: Data(url.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
+        let key = MultiClientUsageLedger.sourceKey(for: url)
+        let isClaudeJSONL = (client == .claudeCode || client == .claudeDesktop)
+            && url.pathExtension.lowercased() == "jsonl"
+        var claudeSourceObservation: SourceFileObservation?
+        if isClaudeJSONL {
+            // Reuse one classification only when the checkpoint proves it was
+            // written under the current contract and the physical source is unchanged.
+            let observed = try SourceFileObservation.read(at: url)
+            claudeSourceObservation = observed
+            let oppositeClient: UsageClient = client == .claudeCode ? .claudeDesktop : .claudeCode
+            if try ledger.checkpoint(client: oppositeClient, sourceKey: key) != nil {
+                scanNotices.append("Claude：该日志已有另一客户端账本归属，保留旧账并跳过自动重分类")
+                return
+            }
+        }
         let saved = try ledger.checkpoint(client: client, sourceKey: key)
         let isDatabase = ["db", "sqlite"].contains(url.pathExtension.lowercased())
         if isDatabase, let wal = try? FileManager.default.attributesOfItem(atPath: url.path + "-wal") {
@@ -277,8 +316,36 @@ actor MultiClientUsageScanner {
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             identity += ":" + String(width) + ":" + digest
         }
+        if let claudeSourceObservation {
+            identity += "|physical-v1:\(claudeSourceObservation.physicalStamp)"
+        }
         identity = MultiClientUsageParsers.checkpointIdentity(identity, client: client, isDatabase: isDatabase)
-        if let saved, saved.size == size, saved.modified == modified, saved.identity == identity, saved.offset >= size { return }
+        if let saved,
+           saved.size == size,
+           saved.modified == modified,
+           saved.identity == identity,
+           saved.offset >= size,
+           (!isClaudeJSONL || saved.identity.hasPrefix(MultiClientUsageParsers.claudeEntrypointCheckpointPrefix)) {
+            return
+        }
+        if isClaudeJSONL {
+            guard let observed = claudeSourceObservation else { throw CocoaError(.fileReadUnknown) }
+            let classification = try ClaudeTranscriptClassification.classify(
+                url: url,
+                byteLimit: claudeClassificationBytesRemaining
+            )
+            claudeClassificationBytesRemaining = max(0, claudeClassificationBytesRemaining - classification.bytesRead)
+            guard let classifiedClient = classification.client else {
+                scanNotices.append("Claude：日志分类未完成，保留旧账且不推进断点")
+                return
+            }
+            guard classifiedClient == client else {
+                scanNotices.append("Claude：日志归属与当前客户端不符，保留旧账且不推进断点")
+                return
+            }
+            guard observed.matches(try SourceFileObservation.read(at: url)) else { throw POSIXError(.ESTALE) }
+            claudeSourceObservation = observed
+        }
         let sessionHint = client == .deepseek ? try deepSeekSession(url, identity: identity) : url.deletingPathExtension().lastPathComponent
         let events: [ClientUsageEvent]
         let offset: Int64
@@ -330,7 +397,16 @@ actor MultiClientUsageScanner {
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
         } else if url.pathExtension.lowercased() == "jsonl" {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
-            let start = saved.flatMap { $0.identity == identity && $0.offset <= size && ($0.size != size || $0.modified == modified) ? $0.offset : nil } ?? 0
+            let start = saved.flatMap {
+                guard MultiClientUsageParsers.checkpointBaseIdentity($0.identity)
+                    == MultiClientUsageParsers.checkpointBaseIdentity(identity),
+                    $0.offset <= size else { return nil }
+                if $0.size == size {
+                    guard $0.modified == modified else { return nil }
+                    return $0.identity == identity ? $0.offset : 0
+                }
+                return $0.offset
+            } ?? 0
             try handle.seek(toOffset: UInt64(start))
             let readWindow = 4 * 1024 * 1024
             let isClaude = client == .claudeCode || client == .claudeDesktop
@@ -388,6 +464,13 @@ actor MultiClientUsageScanner {
             let width = min(4096, size)
             let bytes = try prefix.readShared(upToCount: Int(width), probe: true)
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+        if let claudeSourceObservation {
+            checkpointIdentity += "|physical-v1:\(claudeSourceObservation.physicalStamp)"
+        }
+        if let claudeSourceObservation,
+           !claudeSourceObservation.matches(try SourceFileObservation.read(at: url)) {
+            throw POSIXError(.ESTALE)
         }
         _ = try ledger.ingest(events, client: client, sourceKey: key,
                               checkpoint: MultiClientFileCheckpoint(offset: offset, size: size, modified: checkpointModified,

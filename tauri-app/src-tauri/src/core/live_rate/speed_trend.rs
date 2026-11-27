@@ -93,8 +93,10 @@ impl BodySpeedTrendStore {
         };
         #[cfg(not(test))]
         migration::migrate_body_speed_to_shared(&store.path, store.shared_path.as_ref().unwrap())?;
-        let connection = store.connect()?;
-        Self::create_schema(&connection)?;
+        let mut connection = store.connect()?;
+        let transaction = begin_body_speed_write_transaction(&mut connection, true)?;
+        Self::create_schema(&transaction)?;
+        transaction.commit()?;
         Ok(store)
     }
 
@@ -116,7 +118,10 @@ impl BodySpeedTrendStore {
             return Ok(0);
         }
         let mut connection = self.connect()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = begin_body_speed_write_transaction(
+            &mut connection,
+            self.shared_path.is_some(),
+        )?;
         let changed = Self::ingest_transaction(
             &transaction,
             samples,
@@ -650,6 +655,24 @@ impl BodySpeedTrendStore {
     }
 }
 
+/// Start a serialized body-speed write, checking the shared B schema while
+/// the SQLite writer lock is held. Standalone A/test stores retain their own
+/// schema lifecycle and do not use B's global user_version.
+pub(super) fn begin_body_speed_write_transaction(
+    connection: &mut Connection,
+    shared_b: bool,
+) -> rusqlite::Result<Transaction<'_>> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if shared_b {
+        #[cfg(not(test))]
+        let version = transaction.physical_user_version()?;
+        #[cfg(test)]
+        let version = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        crate::core::multi_client_usage::require_b_schema_v2_version(version)?;
+    }
+    Ok(transaction)
+}
+
 fn normalized_retention_days(days: u16) -> u16 {
     if matches!(days, 15 | 30) {
         days
@@ -759,6 +782,16 @@ mod tests {
         (BodySpeedTrendStore::open(&path).unwrap(), path)
     }
 
+    fn shared_store(root: &Path) -> (BodySpeedTrendStore, PathBuf) {
+        let shared_path = root.join("multi-client-usage.sqlite");
+        crate::core::multi_client_usage::initialize_usage_database_at(&shared_path).unwrap();
+        let legacy_path = root.join("codex-ledger.sqlite");
+        (
+            BodySpeedTrendStore::open_shared(&legacy_path, &shared_path).unwrap(),
+            shared_path,
+        )
+    }
+
     fn sample(
         id: &str,
         model: Option<&str>,
@@ -814,6 +847,61 @@ mod tests {
         assert_eq!(updated[0].output_tokens, 200);
         assert_eq!(updated[0].tokens_per_second, 50.0);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn future_b_schema_refuses_body_speed_schema_and_sample_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let shared_path = root.path().join("multi-client-usage.sqlite");
+        crate::core::multi_client_usage::initialize_usage_database_at(&shared_path).unwrap();
+        let connection = Connection::open(&shared_path).unwrap();
+        connection.pragma_update(None, "user_version", 3_i64).unwrap();
+        drop(connection);
+
+        let legacy_path = root.path().join("codex-ledger.sqlite");
+        let error = BodySpeedTrendStore::open_shared(&legacy_path, &shared_path)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("高于此程序支持的版本"));
+        let connection = Connection::open(&shared_path).unwrap();
+        let body_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+                 ('speed_trend_meta','speed_samples','speed_sample_ids','speed_5m')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body_tables, 0);
+        connection.pragma_update(None, "user_version", 2_i64).unwrap();
+        drop(connection);
+
+        let (store, shared_path) = shared_store(root.path());
+        let now = 1_800_000_600.0;
+        store
+            .ingest(&[sample("before", Some("model-a"), now, 100, 2.0, None)], now, 30)
+            .unwrap();
+        let connection = Connection::open(&shared_path).unwrap();
+        connection.pragma_update(None, "user_version", 3_i64).unwrap();
+        drop(connection);
+
+        let error = store
+            .ingest(&[sample("blocked", Some("model-a"), now, 100, 2.0, None)], now, 30)
+            .unwrap_err();
+        assert!(error.to_string().contains("高于此程序支持的版本"));
+        let connection = Connection::open(&shared_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM speed_samples", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            3,
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use crate::core::{
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rusqlite::backup::Backup;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -37,6 +37,7 @@ const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SCANNED_ENTRIES: usize = 200_000;
 const MAX_FILES_PER_CLIENT: usize = 20_000;
+const CLAUDE_CLASSIFICATION_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
@@ -44,6 +45,7 @@ const MAX_COUNTER: u64 = 1_000_000_000_000;
 const MAX_CLAUDE_DESKTOP_HISTORY_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES: usize = 50_000;
 const CLAUDE_CACHE_LIFETIMES_FINGERPRINT: &str = "claude-cache-lifetimes-v1|";
+const CLAUDE_ENTRYPOINT_FINGERPRINT: &str = "claude-entrypoint-v3|";
 const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
 const CACHE_RANKING_LOW_HIT_RATE: f64 = 0.3;
@@ -969,25 +971,11 @@ pub(crate) fn initialize_usage_database_at(path: &Path) -> rusqlite::Result<()> 
     }
     let connection = Connection::open(path)?;
     connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
-    let version = read_schema_version(&connection)?;
-    if version > SCHEMA_VERSION {
-        return Err(rusqlite::Error::InvalidParameterName(format!(
-            "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
-        )));
-    }
-    if version == SCHEMA_VERSION {
-        if !has_expected_usage_tables(&connection)? {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "多客户端用量数据库结构与版本不匹配".to_owned(),
-            ));
-        }
-    } else {
-        ensure_schema(&connection, path)?;
-        if !has_expected_usage_tables(&connection)? {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "多客户端用量数据库初始化后结构无效".to_owned(),
-            ));
-        }
+    ensure_schema(&connection, path)?;
+    if !has_expected_usage_tables(&connection)? {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "多客户端用量数据库初始化后结构无效".to_owned(),
+        ));
     }
     let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
@@ -1253,6 +1241,7 @@ fn refresh_multi_client_usage_at(
     work.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     work.dedup();
     if !work.is_empty() {
+        let mut claude_classification_budget = CLAUDE_CLASSIFICATION_TOTAL_BYTES;
         let start = {
             let cursor = MULTI_CLIENT_SCAN_CURSOR.get_or_init(|| Mutex::new(0));
             let cursor = cursor.lock().map_err(|error| error.to_string())?;
@@ -1279,7 +1268,12 @@ fn refresh_multi_client_usage_at(
                     );
                 })
             } else {
-                scan_transcript_file(&mut connection, client, path)
+                scan_transcript_file_with_budget(
+                    &mut connection,
+                    client,
+                    path,
+                    &mut claude_classification_budget,
+                )
             };
             if let Err(error) = result {
                 diagnostics.push(format!("{client}: 无法读取 {}: {error}", path.display()));
@@ -1300,12 +1294,17 @@ fn refresh_multi_client_usage_at(
     }
 
     let refreshed_at = now_ms();
-    connection
+    let metadata_transaction = begin_b_write_transaction(&connection)
+        .map_err(|error| error.to_string())?;
+    metadata_transaction
         .execute(
             "INSERT INTO multi_usage_metadata(key, value) VALUES ('updated_at_ms', ?1) \
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [refreshed_at.to_string()],
         )
+        .map_err(|error| error.to_string())?;
+    metadata_transaction
+        .commit()
         .map_err(|error| error.to_string())?;
     diagnostics.sort();
     diagnostics.dedup();
@@ -2325,10 +2324,17 @@ fn is_source_name(client: &str, path: &Path) -> bool {
 
 fn source_checkpoint_fingerprint(client: &str, fingerprint: &str) -> String {
     if matches!(client, "claudeCode" | "claudeDesktop") {
-        format!("{CLAUDE_CACHE_LIFETIMES_FINGERPRINT}{fingerprint}")
+        format!("{CLAUDE_ENTRYPOINT_FINGERPRINT}{CLAUDE_CACHE_LIFETIMES_FINGERPRINT}{fingerprint}")
     } else {
         fingerprint.to_string()
     }
+}
+
+fn checkpoint_base_fingerprint(fingerprint: &str) -> &str {
+    fingerprint
+        .split_once("|physical-v1:")
+        .map(|(base, _)| base)
+        .unwrap_or(fingerprint)
 }
 
 fn is_gemini_name(path: &Path) -> bool {
@@ -2346,17 +2352,78 @@ fn scan_transcript_file(
     client: &str,
     path: &Path,
 ) -> Result<(), String> {
+    let mut classification_budget = CLAUDE_CLASSIFICATION_TOTAL_BYTES;
+    scan_transcript_file_with_budget(connection, client, path, &mut classification_budget)
+}
+
+fn scan_transcript_file_with_budget(
+    connection: &mut Connection,
+    client: &str,
+    path: &Path,
+    classification_budget: &mut usize,
+) -> Result<(), String> {
     let source = fs::File::open(path).map_err(|error| error.to_string())?;
     let metadata = source.metadata().map_err(|error| error.to_string())?;
     let source_modified_ns = modified_ns(&metadata);
     let path_key = path.to_string_lossy().to_string();
-    let previous =
-        read_checkpoint(connection, client, &path_key).map_err(|error| error.to_string())?;
     let lower_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    let is_claude = matches!(client, "claudeCode" | "claudeDesktop")
+        && lower_name.ends_with(".jsonl");
+    let claude_witness = if is_claude {
+        Some(source_file_witness(&source).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    if is_claude {
+        let opposite = if client == "claudeCode" { "claudeDesktop" } else { "claudeCode" };
+        if read_checkpoint(connection, opposite, &path_key)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err(format!(
+                "Claude 日志已有 {opposite} 客户端 checkpoint，保留旧账并跳过自动重分类"
+            ));
+        }
+    }
+    let previous =
+        read_checkpoint(connection, client, &path_key).map_err(|error| error.to_string())?;
+    if is_claude {
+        let witness = claude_witness.ok_or("缺少 Claude 源文件物理 witness")?;
+        let modified = source_modified_ns as f64 / 1_000_000_000.0;
+        // A current-version checkpoint carrying the exact physical witness
+        // proves that this source was already classified under this contract.
+        // Keep the hot unchanged-file path cheap; older fingerprints must pass
+        // through classification before they can be replayed.
+        if let Some(saved) = previous.as_ref() {
+            if saved.offset == metadata.len()
+                && saved.size == metadata.len()
+                && saved.modified == modified
+            {
+                let width = saved.offset.min(4_096) as usize;
+                let mut identity = file_prefix_identity_from_file(&source, width)?;
+                identity.push_str("|physical-v1:");
+                identity.push_str(&witness.checkpoint_key());
+                let current = source_checkpoint_fingerprint(client, &identity);
+                if saved.fingerprint.as_deref() == Some(current.as_str()) {
+                    verify_claude_source_unchanged(&source, path, witness)?;
+                    return Ok(());
+                }
+            }
+        }
+        // Classify before any replay shortcut. A checkpoint from an older
+        // contract must never let current evidence for the other client pass.
+        let actual = classify_claude_file(&source, path, classification_budget)?;
+        if actual != client {
+            return Err(format!(
+                "Claude 日志分类为 {actual}，与当前 {client} namespace 不符；断点未前移"
+            ));
+        }
+        verify_claude_source_unchanged(&source, path, witness)?;
+    }
     if client == "deepseek" && lower_name.ends_with(".jsonl.zstd") {
         let modified = source_modified_ns as f64 / 1_000_000_000.0;
         let start = if let Some(saved) = &previous {
@@ -2408,10 +2475,17 @@ fn scan_transcript_file(
         let modified = source_modified_ns as f64 / 1_000_000_000.0;
         let start = if let Some(saved) = &previous {
             let width = saved.offset.min(4_096) as usize;
-            let identity = file_prefix_identity_from_file(&source, width)?;
+            let mut identity = file_prefix_identity_from_file(&source, width)?;
+            if let Some(witness) = claude_witness {
+                identity.push_str("|physical-v1:");
+                identity.push_str(&witness.checkpoint_key());
+            }
             let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &identity);
-            let unchanged_prefix =
-                saved.fingerprint.as_deref() == Some(checkpoint_fingerprint.as_str());
+            let unchanged_prefix = saved
+                .fingerprint
+                .as_deref()
+                .map(checkpoint_base_fingerprint)
+                == Some(checkpoint_base_fingerprint(&checkpoint_fingerprint));
             if unchanged_prefix
                 && saved.offset <= metadata.len()
                 && (saved.size != metadata.len() || saved.modified == modified)
@@ -2419,10 +2493,15 @@ fn scan_transcript_file(
                 if saved.offset == metadata.len()
                     && saved.size == metadata.len()
                     && saved.modified == modified
+                    && saved.fingerprint.as_deref() == Some(checkpoint_fingerprint.as_str())
                 {
                     return Ok(());
                 }
-                saved.offset
+                if saved.size == metadata.len() {
+                    0
+                } else {
+                    saved.offset
+                }
             } else {
                 0
             }
@@ -2430,7 +2509,6 @@ fn scan_transcript_file(
             0
         };
         const READ_WINDOW: usize = 4 * 1024 * 1024;
-        let is_claude = matches!(client, "claudeCode" | "claudeDesktop");
         let record_limit = if is_claude { MAX_SOURCE_FILE_BYTES as usize } else { READ_WINDOW };
         let before = if is_claude && metadata.len().saturating_sub(start) >= READ_WINDOW as u64 {
             Some(source_file_witness(&source).map_err(|error| error.to_string())?)
@@ -2468,25 +2546,21 @@ fn scan_transcript_file(
         };
         let complete_len = last_newline + 1;
         let content = &chunk[..complete_len];
-        let claude_file_client = if client == "claudeCode" || client == "claudeDesktop" {
-            Some(classify_claude_file(&source)?)
-        } else {
-            None
-        };
-        let events = if claude_file_client.is_some_and(|actual| actual != client) {
-            Vec::new()
-        } else {
-            match client {
-                "claudeCode" | "claudeDesktop" => parse_claude(content, path, client),
-                "deepseek" => parse_deepseek(content, path),
-                "gemini" => parse_gemini(content, path),
-                "opencode" => parse_opencode_json(content, path),
-                _ => Vec::new(),
-            }
+        let events = match client {
+            "claudeCode" | "claudeDesktop" => parse_claude(content, path, client),
+            "deepseek" => parse_deepseek(content, path),
+            "gemini" => parse_gemini(content, path),
+            "opencode" => parse_opencode_json(content, path),
+            _ => Vec::new(),
         };
         let offset = start.saturating_add(complete_len as u64);
         let identity = file_prefix_identity_from_file(&source, offset.min(4_096) as usize)?;
-        let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &identity);
+        let mut checkpoint_identity = identity;
+        if let Some(witness) = claude_witness {
+            checkpoint_identity.push_str("|physical-v1:");
+            checkpoint_identity.push_str(&witness.checkpoint_key());
+        }
+        let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &checkpoint_identity);
         if extended {
             let named = fs::File::open(path).map_err(|error| error.to_string())?;
             let witness = before.ok_or("源文件在读取期间发生变化，断点未前移")?;
@@ -2494,6 +2568,9 @@ fn scan_transcript_file(
                 || witness != source_file_witness(&named).map_err(|error| error.to_string())? {
                 return Err("源文件在读取期间发生变化，断点未前移".into());
             }
+        }
+        if let Some(witness) = claude_witness {
+            verify_claude_source_unchanged(&source, path, witness)?;
         }
         persist_source_update(
             connection,
@@ -2527,13 +2604,7 @@ fn scan_transcript_file(
     }
     let content = raw;
     let events = match client {
-        "claudeCode" | "claudeDesktop" => {
-            if classify_claude_file(&source)? != client {
-                Vec::new()
-            } else {
-                parse_claude(&content, path, client)
-            }
-        }
+        "claudeCode" | "claudeDesktop" => parse_claude(&content, path, client),
         "deepseek" => parse_deepseek(&content, path),
         "gemini" => parse_gemini(&content, path),
         "opencode" => parse_opencode_json(&content, path),
@@ -3336,9 +3407,34 @@ fn uncached_content_identity(file: &fs::File, size: u64) -> Result<String, Strin
         .collect())
 }
 
-fn classify_claude_file(file: &fs::File) -> Result<&'static str, String> {
-    let prefix = probe_uncached(file, 0, 64 * 1024).map_err(|error| error.to_string())?;
-    Ok(classify_claude_bytes(&prefix))
+fn classify_claude_file(
+    file: &fs::File,
+    path: &Path,
+    total_budget: &mut usize,
+) -> Result<&'static str, String> {
+    let budget = (*total_budget).min(claude_transcript_classification::MAXIMUM_BYTES);
+    let result = claude_transcript_classification::classify_file(file, path, budget)?;
+    *total_budget = (*total_budget).saturating_sub(result.bytes_read);
+    result.client().ok_or_else(|| {
+        format!(
+            "Claude 客户端分类未完成（{:?}，读取 {} 字节），断点未前移",
+            result.evidence, result.bytes_read
+        )
+    })
+}
+
+fn verify_claude_source_unchanged(
+    source: &fs::File,
+    path: &Path,
+    witness: crate::core::shared_source_io::SourceFileWitness,
+) -> Result<(), String> {
+    let named = fs::File::open(path).map_err(|error| error.to_string())?;
+    if witness != source_file_witness(source).map_err(|error| error.to_string())?
+        || witness != source_file_witness(&named).map_err(|error| error.to_string())?
+    {
+        return Err("Claude 源文件在分类或扫描期间发生变化，断点未前移".into());
+    }
+    Ok(())
 }
 
 fn decode_dsh_frames(input: &[u8], maximum_decoded: usize) -> Result<(Vec<u8>, usize), String> {
@@ -3776,7 +3872,20 @@ fn persist_source_update(
     fingerprint: &str,
     events: Vec<UsageEvent>,
 ) -> rusqlite::Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_b_write_transaction(connection)?;
+    if matches!(client, "claudeCode" | "claudeDesktop") {
+        let opposite = if client == "claudeCode" { "claudeDesktop" } else { "claudeCode" };
+        let owns_source: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM client_file_checkpoints WHERE client=?1 AND source_key=?2)",
+            params![opposite, path],
+            |row| row.get(0),
+        )?;
+        if owns_source {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "Claude 日志已有 {opposite} 客户端 checkpoint，拒绝跨客户端重分类"
+            )));
+        }
+    }
     for event in events {
         upsert_event(&transaction, &event)?;
     }
@@ -3942,25 +4051,30 @@ fn read_checkpoint(
 }
 
 fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Result<()> {
-    let schema_version = read_schema_version(connection)?;
+    // Serialize both admission and migration. A concurrent initializer may
+    // have upgraded the database while this caller was opening its handle.
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    let schema_version = read_schema_version(&transaction)?;
     if schema_version < 0 || schema_version > SCHEMA_VERSION {
+        let _ = transaction.rollback();
         return Err(rusqlite::Error::InvalidQuery);
     }
-    if !has_compatible_existing_usage_tables(connection, schema_version > 0)? {
+    if !has_compatible_existing_usage_tables(&transaction, schema_version > 0)? {
         // Never reinterpret a database that claims to be supported but has another layout.
+        let _ = transaction.rollback();
         return Err(rusqlite::Error::InvalidQuery);
     }
     if schema_version < SCHEMA_VERSION {
-        let existing_tables: i64 = connection.query_row(
+        let existing_tables: i64 = transaction.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_'",
             [],
             |row| row.get(0),
         )?;
         if existing_tables > 0 {
-            backup_before_upgrade(connection, database_path, schema_version)?;
+            backup_before_upgrade(&transaction, database_path, schema_version)?;
         }
     }
-    connection.execute_batch(
+    transaction.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS client_usage_events (
             client TEXT NOT NULL,
@@ -4002,8 +4116,8 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
         );
         "#,
     )?;
-    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    Ok(())
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    transaction.commit()
 }
 
 fn has_expected_usage_tables(connection: &Connection) -> rusqlite::Result<bool> {
@@ -4114,6 +4228,36 @@ fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
 
 fn read_schema_version(connection: &Connection) -> rusqlite::Result<i64> {
     connection.pragma_query_value(None, "user_version", |row| row.get(0))
+}
+
+/// Start a B writer transaction and validate its schema under SQLite's writer
+/// lock. Callers must not perform DML until this function succeeds.
+pub(crate) fn begin_b_write_transaction(
+    connection: &Connection,
+) -> rusqlite::Result<Transaction<'_>> {
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    if let Err(error) = require_b_schema_v2(&transaction) {
+        let _ = transaction.rollback();
+        return Err(error);
+    }
+    Ok(transaction)
+}
+
+pub(crate) fn require_b_schema_v2(connection: &Connection) -> rusqlite::Result<()> {
+    let version = read_schema_version(connection)?;
+    require_b_schema_v2_version(version)
+}
+
+pub(crate) fn require_b_schema_v2_version(version: i64) -> rusqlite::Result<()> {
+    if version != SCHEMA_VERSION {
+        let message = if version > SCHEMA_VERSION {
+            format!("B 数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}，已拒绝写入")
+        } else {
+            format!("B 数据库版本 {version} 与要求的版本 {SCHEMA_VERSION} 不兼容，已拒绝写入")
+        };
+        return Err(rusqlite::Error::InvalidParameterName(message));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -5306,6 +5450,7 @@ mod tests {
     }
 
     use super::*;
+    use std::io::{Seek, SeekFrom, Write};
     use std::time::SystemTime;
 
     struct TempDir(PathBuf);
@@ -5927,7 +6072,7 @@ mod tests {
             .fingerprint
             .as_deref()
             .unwrap()
-            .starts_with(CLAUDE_CACHE_LIFETIMES_FINGERPRINT));
+            .starts_with(CLAUDE_ENTRYPOINT_FINGERPRINT));
         let revision_count = connection
             .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
                 row.get::<_, i64>(0)
@@ -5945,6 +6090,324 @@ mod tests {
             revision_count, 2,
             "the versioned checkpoint skips the unchanged source next time"
         );
+    }
+
+    #[test]
+    fn long_claude_first_record_classifies_desktop_for_production_scanner() {
+        let temporary = TempDir::new("claude-long-first-record-classification");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        let padded = format!(
+            "{{\"content\":\"{}\",\"entrypoint\":\"claude-desktop-3p\"}}\n",
+            "x".repeat(70 * 1024)
+        );
+        let assistant = r#"{"sessionId":"desktop-session","type":"assistant","timestamp":"2026-11-26T10:02:04.000Z","message":{"id":"desktop-event","model":"claude-opus-5-5","usage":{"input_tokens":123,"output_tokens":17}}}
+"#;
+        let mut content = padded.into_bytes();
+        content.extend_from_slice(assistant.as_bytes());
+        assert!(content[..64 * 1024].iter().all(|byte| *byte != b'\n'));
+        fs::write(&transcript, &content).unwrap();
+
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let mismatch = scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap_err();
+        assert!(mismatch.contains("分类为 claudeDesktop"));
+        assert!(read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .is_none(), "a mismatched client must not acquire a checkpoint");
+        scan_transcript_file(&mut connection, "claudeDesktop", &transcript).unwrap();
+
+        let cli_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM client_usage_events WHERE client='claudeCode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let desktop_rows: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM client_usage_events WHERE client='claudeDesktop'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cli_rows, 0, "long Desktop header must not be credited to CLI");
+        assert_eq!(desktop_rows, 1, "later records may omit the entrypoint");
+        let checkpoint = read_checkpoint(
+            &connection,
+            "claudeDesktop",
+            &transcript.to_string_lossy(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(checkpoint.offset, content.len() as u64);
+    }
+
+    #[test]
+    fn opposite_claude_checkpoint_blocks_cross_namespace_reclassification() {
+        let temporary = TempDir::new("claude-opposite-checkpoint-owner");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        let content = concat!(
+            "{\"entrypoint\":\"claude-desktop-3p\"}\n",
+            "{\"sessionId\":\"desktop-session\",\"type\":\"assistant\",\"timestamp\":\"2026-11-26T10:02:04.000Z\",\"message\":{\"id\":\"desktop-event\",\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":123,\"output_tokens\":17}}}\n"
+        );
+        fs::write(&transcript, content).unwrap();
+
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let old = UsageEvent {
+            client: "claudeCode".into(),
+            session_id: "legacy-session".into(),
+            event_id: "legacy-event".into(),
+            model: "claude-opus-5-5".into(),
+            timestamp_ms: 1_795_800_000_000,
+            input_tokens: 40,
+            output_tokens: 0,
+            quality: "recorded".into(),
+            ..Default::default()
+        };
+        persist_source_update(
+            &mut connection,
+            "claudeCode",
+            &transcript.to_string_lossy(),
+            content.len() as i64,
+            content.len() as u64,
+            123,
+            "legacy-code-checkpoint",
+            vec![old],
+        )
+        .unwrap();
+        let saved = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+
+        let error = scan_transcript_file(&mut connection, "claudeDesktop", &transcript).unwrap_err();
+        assert!(error.contains("已有 claudeCode 客户端 checkpoint"));
+        let after = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.offset, saved.offset);
+        assert_eq!(after.size, saved.size);
+        assert_eq!(after.modified, saved.modified);
+        assert_eq!(after.fingerprint, saved.fingerprint);
+        assert!(read_checkpoint(&connection, "claudeDesktop", &transcript.to_string_lossy())
+            .unwrap()
+            .is_none());
+        let desktop_event = UsageEvent {
+            client: "claudeDesktop".into(),
+            session_id: "desktop-session".into(),
+            event_id: "desktop-event".into(),
+            model: "claude-opus-5-5".into(),
+            timestamp_ms: 1_795_800_000_000,
+            input_tokens: 123,
+            output_tokens: 17,
+            quality: "recorded".into(),
+            ..Default::default()
+        };
+        let write_race = persist_source_update(
+            &mut connection,
+            "claudeDesktop",
+            &transcript.to_string_lossy(),
+            content.len() as i64,
+            content.len() as u64,
+            124,
+            "desktop-checkpoint",
+            vec![desktop_event],
+        )
+        .unwrap_err();
+        assert!(write_race.to_string().contains("已有 claudeCode 客户端 checkpoint"));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+    }
+
+    #[test]
+    fn existing_claude_checkpoint_cannot_skip_reclassification() {
+        let temporary = TempDir::new("claude-checkpoint-classification-fence");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        let content = concat!(
+            "{\"entrypoint\":\"claude-desktop-3p\"}\n",
+            "{\"sessionId\":\"desktop-session\",\"type\":\"assistant\",\"timestamp\":\"2026-11-26T10:02:04.000Z\",\"message\":{\"id\":\"desktop-event\",\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":123,\"output_tokens\":17}}}\n"
+        );
+        fs::write(&transcript, content).unwrap();
+        let source = fs::File::open(&transcript).unwrap();
+        let metadata = source.metadata().unwrap();
+        // Simulate a checkpoint written under the previous classifier
+        // contract: it lacks both the entrypoint version and physical witness.
+        let identity = format!(
+            "{CLAUDE_CACHE_LIFETIMES_FINGERPRINT}{}",
+            file_prefix_identity_from_file(&source, content.len().min(4_096)).unwrap(),
+        );
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let old = UsageEvent {
+            client: "claudeCode".into(),
+            session_id: "legacy-session".into(),
+            event_id: "legacy-event".into(),
+            model: "claude-opus-5-5".into(),
+            timestamp_ms: 1_795_800_000_000,
+            input_tokens: 40,
+            output_tokens: 0,
+            quality: "recorded".into(),
+            ..Default::default()
+        };
+        persist_source_update(
+            &mut connection,
+            "claudeCode",
+            &transcript.to_string_lossy(),
+            content.len() as i64,
+            metadata.len(),
+            modified_ns(&metadata),
+            &identity,
+            vec![old],
+        )
+        .unwrap();
+        let saved = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+
+        let mut exhausted_budget = 0;
+        let incomplete = scan_transcript_file_with_budget(
+            &mut connection,
+            "claudeCode",
+            &transcript,
+            &mut exhausted_budget,
+        )
+        .unwrap_err();
+        assert!(incomplete.contains("分类未完成"));
+        let after_incomplete = read_checkpoint(
+            &connection,
+            "claudeCode",
+            &transcript.to_string_lossy(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(after_incomplete.offset, saved.offset);
+        assert_eq!(after_incomplete.size, saved.size);
+        assert_eq!(after_incomplete.modified, saved.modified);
+        assert_eq!(after_incomplete.fingerprint, saved.fingerprint);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "incomplete classification preserves existing events",
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "incomplete classification writes no revisions",
+        );
+
+        let error = scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap_err();
+        assert!(error.contains("分类为 claudeDesktop"));
+        let after = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.offset, saved.offset);
+        assert_eq!(after.size, saved.size);
+        assert_eq!(after.modified, saved.modified);
+        assert_eq!(after.fingerprint, saved.fingerprint);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+    }
+
+    #[test]
+    fn claude_physical_witness_reparses_same_size_tail_rewrite() {
+        let temporary = TempDir::new("claude-physical-witness");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        let filler = "x".repeat(6_000);
+        let content = format!(
+            "{{\"entrypoint\":\"cli\",\"sessionId\":\"s\",\"type\":\"assistant\",\"timestamp\":\"2026-11-26T10:00:00Z\",\"message\":{{\"id\":\"tail-edit\",\"model\":\"claude-opus\",\"content\":\"{filler}\",\"usage\":{{\"input_tokens\":1000,\"output_tokens\":17}}}}}}\n"
+        );
+        let original = content.into_bytes();
+        assert!(original.len() > 4_096);
+        fs::write(&transcript, &original).unwrap();
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap();
+        let first_input: i64 = connection
+            .query_row("SELECT input_tokens FROM client_usage_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(first_input, 1_000);
+        let mut exhausted_budget = 0;
+        scan_transcript_file_with_budget(
+            &mut connection,
+            "claudeCode",
+            &transcript,
+            &mut exhausted_budget,
+        )
+        .expect("an exact current-version physical checkpoint avoids reclassification");
+        let first_revisions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(first_revisions, 1);
+        let before = source_file_witness(&fs::File::open(&transcript).unwrap()).unwrap();
+        let original_modified = fs::metadata(&transcript).unwrap().modified().unwrap();
+
+        let old_token = b"1000";
+        let offset = original
+            .windows(old_token.len())
+            .position(|window| window == old_token)
+            .expect("tail token") as u64;
+        assert!(offset > 4_096);
+        let mut handle = fs::OpenOptions::new().write(true).open(&transcript).unwrap();
+        handle.seek(SeekFrom::Start(offset)).unwrap();
+        handle.write_all(b"2000").expect("same-size tail rewrite");
+        handle.sync_all().unwrap();
+        handle.set_modified(original_modified).unwrap();
+        drop(handle);
+        let after_rewrite = source_file_witness(&fs::File::open(&transcript).unwrap()).unwrap();
+        assert_ne!(before.checkpoint_key(), after_rewrite.checkpoint_key());
+
+        scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap();
+        let second_input: i64 = connection
+            .query_row("SELECT input_tokens FROM client_usage_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(second_input, 2_000);
+        let second_revisions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(second_revisions, 2);
+        let checkpoint = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert!(checkpoint
+            .fingerprint
+            .as_deref()
+            .unwrap()
+            .contains(&format!("physical-v1:{}", after_rewrite.checkpoint_key())));
+
+        scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap();
+        let stable_revisions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stable_revisions, 2);
     }
 
     #[test]
@@ -6971,6 +7434,78 @@ mod tests {
     }
 
     #[test]
+    fn stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes() {
+        let temporary = TempDir::new("stale-b-writer");
+        let path = temporary.path().join("ledger.sqlite");
+        let mut writer = open_database(&path).unwrap();
+        ensure_schema(&writer, &path).unwrap();
+        writer.pragma_update(None, "user_version", 3_i64).unwrap();
+
+        let event = UsageEvent {
+            client: "claudeCode".into(),
+            session_id: "session".into(),
+            event_id: "session:event".into(),
+            model: "model".into(),
+            timestamp_ms: 12,
+            input_tokens: 4,
+            output_tokens: 2,
+            quality: "recorded".into(),
+            ..Default::default()
+        };
+        let error = persist_source_update(
+            &mut writer,
+            "claudeCode",
+            "fixture-source",
+            12,
+            12,
+            0,
+            "fixture-fingerprint",
+            vec![event],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("高于此程序支持的版本"));
+        assert_eq!(
+            writer.query_row("SELECT COUNT(*) FROM client_file_checkpoints", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+        assert_eq!(
+            writer.query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+        assert_eq!(
+            writer.query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+        assert_eq!(read_schema_version(&writer).unwrap(), 3);
+    }
+
+    #[test]
+    fn concurrent_b_initializers_serialize_schema_v2_initialization() {
+        let temporary = TempDir::new("concurrent-b-init");
+        let path = temporary.path().join("ledger.sqlite");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let connection = Connection::open(&path).unwrap();
+                connection.busy_timeout(DATABASE_BUSY_TIMEOUT).unwrap();
+                barrier.wait();
+                ensure_schema(&connection, &path)
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(read_schema_version(&connection).unwrap(), SCHEMA_VERSION);
+        assert!(has_expected_usage_tables(&connection).unwrap());
+        assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn schema_admission_refuses_collisions_without_writes_or_backups() {
         for (version, schema) in [
             (-1_i64, ""),
@@ -7020,6 +7555,27 @@ mod tests {
         drop(connection);
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn current_swift_schema_without_optional_rust_metadata_remains_compatible() {
+        let temporary = TempDir::new("schema-v2-optional-metadata");
+        let path = temporary.path().join("ledger.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        ensure_schema(&connection, &path).unwrap();
+        connection.execute("DROP TABLE multi_usage_metadata", []).unwrap();
+        let exists = || -> rusqlite::Result<bool> {
+            connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='multi_usage_metadata')",
+                [],
+                |row| row.get(0),
+            )
+        };
+        assert!(!exists().unwrap());
+
+        ensure_schema(&connection, &path).unwrap();
+        assert!(exists().unwrap());
+        assert_eq!(read_schema_version(&connection).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

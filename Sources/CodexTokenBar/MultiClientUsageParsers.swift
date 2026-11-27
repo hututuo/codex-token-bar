@@ -8,14 +8,23 @@ enum MultiClientUsageParserError: Error, Equatable {
 
 /// Parses only locally stored usage records. Transcript text and prompt contents are ignored.
 enum MultiClientUsageParsers {
+    static let claudeEntrypointCheckpointPrefix = "claude-entrypoint-v3|claude-cache-lifetimes-v1|"
+
     /// Replay older scanner contracts once, retaining existing database schemas and event IDs.
     /// OpenCode's expanded SQLite row limit does not revise JSON transcript checkpoints.
     static func checkpointIdentity(_ identity: String, client: UsageClient, isDatabase: Bool = false) -> String {
         let prefix: String
-        if client == .claudeCode || client == .claudeDesktop { prefix = "claude-cache-lifetimes-v1|" }
+        if client == .claudeCode || client == .claudeDesktop { prefix = claudeEntrypointCheckpointPrefix }
         else if client == .opencode && isDatabase { prefix = "opencode-sqlite-1m-v1|" }
         else { return identity }
         return identity.hasPrefix(prefix) ? identity : prefix + identity
+    }
+
+    /// Physical witnesses invalidate a same-size fast skip, while an append
+    /// may continue from the saved offset with the same logical prefix.
+    static func checkpointBaseIdentity(_ identity: String) -> String {
+        guard let range = identity.range(of: "|physical-v1:") else { return identity }
+        return String(identity[..<range.lowerBound])
     }
     static let maximumInputBytes = 16 * 1_024 * 1_024
     static let maximumOpenCodePageSize = 500
