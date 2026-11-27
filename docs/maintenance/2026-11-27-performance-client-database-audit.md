@@ -217,7 +217,7 @@
 | `45916052825` | `f59bc14f`；空日账本数组及午夜fixture后的完整回归 | 最终success且独立闭合：Swift2599/0/38，110mandatory及7个惰性日账本、原daily-limit和午夜回归实际通过；vendor700/81suites；macOS1886/0/14、Windows1828/0/15，各84mandatory、16production checks及双负控/hash；Windows真实helper IPC与C#边界marker、frontend1501/cloud18、release112通过/1既有skip及updater均核实；checked-source/evidence PASS |
 | `45916052402` | `f59bc14f`；公开0.9.7升级 | 最终success且按exact source独立闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复；Windows3importer/19唯一manifest/27PASS；不外推为完整CI |
 | `45918494163` | `fcddaf1b`；仅Rust生产聚合配对 | 24cases/336checksums/48oracle/48paired独立复算PASS；6/12配对有CPU或RSS不利项；whole-App明确跳过，不能用于整App验收 |
-| `45921100543` | harness `fcddaf1b`；candidate `f59bc14f` 的整App与Rust聚合 | whole-App于2026-11-27T01:35:49Z进入正式App步骤，仍在执行；不以dispatch时间推算采样完成。ledger已success并独立复算24cases/336checksums/48oracle/48paired；其baseline为3ead，whole-App baseline仍为f9 |
+| `45921100543` | harness `fcddaf1b`；candidate `f59bc14f` 的整App与Rust聚合 | 2026-11-27T02:30:03Z观察为completed/success；whole-App 12/12 trials、6/6 pairs、0/6不利pair。2000 responses中位CPU/footprint/RSS降16.37%/4.17%/2.89%，20000 responses降42.33%/6.76%/7.81%；retained graph 12/12采集完成、工具报告leaks 0。其baseline为3ead，whole-App baseline仍为f9；不支持减半结论 |
 | `45922884371` | `d14aa7af`；新增去重/定价测试后的完整回归 | Swift实际失败：2607通过/1失败/38跳过；唯一case为大写原始字典key应为nil却预期ambiguous的测试断言，另一价格索引case及7个Deduper case实际通过；其他lane分别闭合，不记整轮PASS |
 | `45922884234` | `d14aa7af`；公开0.9.7升级 | GitHub整体success；独立小证据收集中，待closed proof，不外推完整CI |
 
@@ -264,7 +264,11 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 
 `45918494163`的独立聚合复算：1200 cold CPU下降79.382%、peak RSS增加0.202%；1200 cache-hit CPU增加15.353%、RSS下降0.947%；12000 cold CPU下降83.204%、RSS下降1.803%；12000 cache-hit CPU下降41.886%、RSS下降2.635%。共有24个role cases、12个paired trials，其中6/12至少一项不利。仅读取74份小报告，完整binary/SQLite seed字节未下载或独立hash。它是局部聚合结果，不能证明整App内存减半。
 
-`45921100543`的独立ledger复算：1200 cold/cache-hit CPU中位下降84.60%/12.79%，peak RSS分别增加1.77%/下降0.61%；12000 cold/cache-hit CPU下降86.72%/24.38%，RSS下降2.17%/2.20%。4/12配对至少一项不利。candidate为f59、ledger baseline为3ead，harness输入hash核对exact fcdd；尚未收到该run的whole-App最终结果或retained graph，不能将局部结果提升为整App验收。
+`45921100543`的独立ledger复算：1200 cold/cache-hit CPU中位下降84.60%/12.79%，peak RSS分别增加1.77%/下降0.61%；12000 cold/cache-hit CPU下降86.72%/24.38%，RSS下降2.17%/2.20%。4/12配对至少一项不利。candidate为f59、ledger baseline为3ead，harness输入hash核对exact fcdd；该局部结果与整App结果分开记录。
+
+该run的whole-App小证据已完成有界复核：artifact `15167602203`（29,555,083B，GitHub digest `sha256:a70e1498f92852388c95579d6f28ca692e60db90a1a5e7ebf090db3f14a4b72c`），candidate `f59bc14f`、whole-App baseline `f9e91791`、harness `fcddaf1b`。12个trial全部有121/122个measurement samples，所有6个pair的CPU、physical footprint和RSS均优于或等于baseline；这只证明本固定静态Claude+默认Codex主进程视口下的配对结果。vmmap、heap、referenceTree各12/12返回0；referenceTree按每个allocation猜一个parent，不能证明无泄漏或完整保留路径。报告及重算哈希保存在忽略目录 `current-resource-review/run45921100543-whole-app-review.{json,md}`、`run45921100543-whole-app-small-retention-recomputed.json` 和 `range-read-retained-graph.json`。
+
+当前候选 `9e350c92` 已将 Swift/Rust Claude 首条记录分类器统一到 `claude-entrypoint-v2`：64KiB快速路径、16MiB总预算、跨运行时共同127层容器上限；超限返回 typed `nestingLimit`，不会在下一行或EOF回退CLI。物理文件替换/追加仍拒绝，完整JSON语义校验保留。它仍是未接入发现/账本的候选工具，不是历史漏记修复；7b6的旧来源完整CI已独立PASS，9e350c92的新分类器云端CI正在执行。
 
 ## 已安装程序的只读观测
 
