@@ -55,7 +55,7 @@ final class BodySpeedDatabase: @unchecked Sendable {
             if prefix != nil {
                 try MultiClientUsageLedger.requireSupportedWriteSchema(in: connection)
             }
-            try body(BodySpeedDatabaseConnection(connection, prefix: prefix, objectNames: objectNames))
+            return try body(BodySpeedDatabaseConnection(connection, prefix: prefix, objectNames: objectNames))
         }
     }
 
