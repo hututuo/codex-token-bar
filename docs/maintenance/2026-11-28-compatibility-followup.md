@@ -82,13 +82,15 @@
 
 ## 原始页存储的后续候选
 
-新分配栈将一个 98,304 B 的 Data 分配定位到 C 的 `rawRead` 页读取入口。后续候选将 `Data(count:)` 后再写入，改为 `malloc(count)` 的独立未初始化存储，原 `Darwin.pread` 循环读满后通过 `Data(bytesNoCopy:count:deallocator:.free)` 转交所有权；任意读取错误在返回前释放裸存储。EINTR 重试、提前 EOF 的 EAGAIN、最后 stamp 校验、缓存预算与所有 probe/cap 语义保留；malloc 失败现在抛出 ENOMEM。缓存中的页保持不可变。两个独立静态审查未发现阻断，原生生命周期与字节回归仍待云端。
+新分配栈将一个 98,304 B 的 Data 分配定位到 C 的 `rawRead` 页读取入口。后续候选将 `Data(count:)` 后再写入，改为 `malloc(count)` 的独立未初始化存储，原 `Darwin.pread` 循环读满后通过 `Data(bytesNoCopy:count:deallocator:.free)` 转交所有权；任意读取错误在返回前释放裸存储。EINTR 重试、提前 EOF 的 EAGAIN、最后 stamp 校验、缓存预算与所有 probe/cap 语义保留；malloc 失败现在抛出 ENOMEM。缓存中的页保持不可变。两个独立静态审查未发现阻断，原始页专项生命周期与字节回归的精确 CI 执行证据仍待独立核验。
 
-新增两项公共 API 回归，覆盖热缓存上的 64 KiB 物理 probe、73 字节尾页、4 MiB cap、EOF 不读取、独立 descriptor offset、返回 Data 副本修改、另一 inode 的页/owner 逐出，以及重热后同 inode 同长度覆盖时旧快照保全。原先十项及新增两项均列入标准 Swift CI 的必执行清单。本地仍只运行轻量 execution-gate/workflow/YAML/bash/diff 检查，尚无本候选原生执行证据。
+新增两项公共 API 回归，覆盖热缓存上的 64 KiB 物理 probe、73 字节尾页、4 MiB cap、EOF 不读取、独立 descriptor offset、返回 Data 副本修改、另一 inode 的页/owner 逐出，以及重热后同 inode 同长度覆盖时旧快照保全。原先十项及新增两项均列入标准 Swift CI 的必执行清单。本地仍只运行轻量 execution-gate/workflow/YAML/bash/diff 检查；上述 12 项 SharedSourceIO 专项回归仍待精确 CI `46075158971` 的执行证据独立核验，本候选已有下述公开升级原生执行证据。
 
 该产品候选已推送为 `750449be49627722a86e2ce9b21c9f9cac55997b`。完整 CI `46075158971`、公开 0.9.7 升级 `46075158856`、资源配对 `46075190349` 分别绑定该完整 SHA；资源 dispatch receipt 为 `/tmp/tokenbar-dispatch-750449be-resource.json`，已经与 runId 及 head SHA 绑定。整 App baseline 仍为 `f9e917917df07a24a800bf63d00700d0028bcb28`，aggregate baseline 仍为 `3eadadc66168802643ef595712c739877083559e`。公开升级已取得下述独立审计，其余运行待完成后分别审计原始产物；产品与先前候选的结果分别记录。
 
 公开升级 `46075158856` 的 12 类独立审计全部通过：双平台 checkout 与精确 R 源码一致，两份 ZIP 的 API SHA-256/大小/CRC 全部匹配；Swift 8 项升级及 126 项支持回归、Windows 3 项 importer 与四阶段非 cfg(test) production recovery 实际通过，没有把 filtered/ignored 计作执行。19 个 manifest 场景/23 份报告、14 份重复 typed-SQL 投影、32 条 immutableFiles 哈希一致；Windows 最终 A 的两分区 token 总量为 162/310，quota id42 和 committed-before-exit witness 保全，B 的旧 body 仅一份且 canary 保留。审计前后 862 个原始文件字节不变，42 份原始 JSONL ZIP 成员与提取件相符。证据为 `/tmp/tokenbar-public097-run-46075158856/audit-report.json`。最终 SQL 独立核对适用于 Windows，macOS 未上传最终临时 A/B 库；最终 A 已 checkpoint，未单独保留恢复前的 crash-time main/WAL 对。强退 exit86、恢复前 WAL 存在与读取由精确源码及已完成 hosted 日志证明，不能声称可从保留字节独立重放该早期时点。该结果仍是云端 synthetic fixtures/隔离 probe，不是候选安装或真实用户库验收。
+
+资源 run `46075190349` 的 aggregate 子任务已完成独立审计：24 raw records/12 pairs、48 次完整语义比较、78,000 个独立字段检查全部通过；另对 26 个 seed/post-mutation schema2 数据库直接执行固定 canonical SQL，171,600 个逻辑行/2,059,200 个字段符合算术真值。ZIP 的 API SHA-256/全部 4,142 成员 CRC，以及精确源码/SQL/prices/两个保留 executable/toolchain 封条均匹配。cold CPU 比值为 0.172472/0.164064，cache-hit CPU 为 1.001377/1.003425；RSS 是 lifetime process peak，不含 physical footprint。证据为 `/tmp/tokenbar-resource-run-46075190349/audit/aggregate-audit.json`、同目录 `canonical-sql-audit.json` 与 `aggregate-pair-math-audit.json`。整 App 仍在固定协议采样。C/N/R 的 Rust aggregate 输入未改变，各次测值分开记录，不能把跨 run 差异归因于 Swift 页存储修改。
 
 这里请求的分配尺寸等于逻辑读取尺寸，不代表 malloc 的物理尺寸无取整，也不保证 Foundation 永不复制。没有通过 `withUnsafeBytes` 指针调用 `malloc_size` 写永久断言：该 API 提供连续视图，不是通用的 malloc 所有者起点合同。实际分配大小、后续 Data mutation 的复制成本与整 App 收益仍须精确 SHA 云端诊断和非插桩配对，不能由删除预填充或预留代码直接推算。
 
@@ -105,6 +107,8 @@
 增加该可选汇总后，两份 stdlib harness 测试共 80 项全部通过，allocation 模块为 49 项。新增回归覆盖默认关闭、两种 profile 与 flag 的端到端传递、原 deadline 剩余 20 秒时的超时夹紧、命令/环境/产物哈希、summary 超时/截断/非零退出时保留有效栈、无栈不因 summary 成功而误报，以及 App 退出或 deadline 用尽时不再查询。YAML/全部 shell block/diff 轻量检查通过，没有本地 native 构建或 App 启动。
 
 allocation 并发组另包含 selection profile 与 classes/addresses 标识，分别隔离不同诊断请求，避免它们在 pending 状态相互替代；产品 SHA/ref 后缀、`cancel-in-progress:false` 及原 pair 并发组保持。该分组只调度独立 runner，不改变采样、预算或诊断的非性能资格。
+
+该可选汇总 harness 已推送为 `3bb1ea137ce8445c2b2ef93f72099421fc0b9a3b`，以产品 R、`exact-64k-spread-v1` 和 `allocation_class_summary=true` 显式启动诊断 `46077995146`；receipt 为 `/tmp/tokenbar-dispatch-750449be-allocation-exact64k-classes.json`，已与 run/head 绑定。该运行与旧 harness 的 `46076363363` 分别审计，尚无新摘要采集结果。
 
 ## 精确 3256e3f0 云端结果（2026-11-28）
 
