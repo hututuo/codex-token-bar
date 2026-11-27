@@ -339,6 +339,17 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                         message: "Backup journal mode could not be changed to DELETE", path: target.path)
                 }
             }
+            // Closing the destination releases SQLite's handle on any
+            // inherited sidecars. DELETE mode normally removes them, but an
+            // online backup can leave an empty shared-memory file behind;
+            // remove all target sidecars before exposing the snapshot to a
+            // read-only consumer.
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let sidecar = URL(fileURLWithPath: target.path + suffix)
+                if FileManager.default.fileExists(atPath: sidecar.path) {
+                    try FileManager.default.removeItem(at: sidecar)
+                }
+            }
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
             return target
         } catch {

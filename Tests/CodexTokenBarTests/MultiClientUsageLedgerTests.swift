@@ -519,8 +519,9 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
         let copy = SQLiteDatabaseDriver(url: backup, readOnly: true, createsFileIfMissing: false)
         XCTAssertEqual(try copy.readRows("PRAGMA journal_mode") { $0.text(0) }.first!, "delete")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path + "-wal"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path + "-shm"))
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path + suffix))
+        }
         XCTAssertEqual(try copy.readRows("SELECT SUM(output_tokens) FROM client_usage_events") { $0.int64(0) }.first!, 20)
         try ledger.database.execute("PRAGMA user_version=99")
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
