@@ -325,6 +325,17 @@ jobs:
             --require testSharedDailyLimitAtMidnightExcludesYesterdayAndPreservesRejectedLedger \
             --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
             --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
+            --require testEmptyThreadPollFailureBackoffIgnoresWalChangesUntilTTL \
+            --require testEmptyThreadPollCachesSuccessfulEmptyUntilTTLAndDiscoversStateChangesImmediately \
+            --require testEmptyThreadPollRetriesImmediatelyWhenStateIsCreatedOrPhysicallyReplaced \
+            --require testManualResetForcesEmptyDiscoveryAtTheSameClock \
+            --require testCachedNonemptyThreadOptionsStillRecoverAfterLogsDatabaseAppears \
+            --require testEmptyThreadPollConsumesExistingSignalButPreservesSignalArrivingDuringDiscovery \
+            --require testPausedEmptyDiscoveryCompletionCannotPublishOrCacheFailure \
+            --require testChangedSourceRejectsSuspendedEmptyDiscoverySuccessAndItsCache \
+            --require testSameIdentityRebindClearsDiscoveryCacheAndRejectsSuspendedOldPathFailure \
+            --require testOlderAutomaticDiscoveryFailureCannotOverwriteNewerManualResetCache \
+            --require testEmptyThreadDiscoveryRetriesImmediatelyAfterResumeAndEnable \
             --require testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods \
             --require testDefaultPreparationSharesClosedAttributionAndKeepsRetainedPriceAcrossRefresh \
             --require testFrameCacheKeepsSharedFramesUntilLastConsumerLeaves \

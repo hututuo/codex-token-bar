@@ -136,6 +136,7 @@ final class LiveRateMonitor: ObservableObject {
     private var lastThreadOptionsSignature: LogStoreSignature?
     private var lastThreadOptionsRefreshAt: TimeInterval = 0
     private var lastThreadOptionsFailure: (mainIdentity: String?, attemptedAt: TimeInterval)?
+    private var threadOptionsRefreshRequest = 0
     private let threadOptionsRefreshTTL: TimeInterval = 10
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
@@ -395,6 +396,7 @@ final class LiveRateMonitor: ObservableObject {
             totalRate.clear()
             selectedSmoothedTokensPerSecond = 0
             totalSmoothedTokensPerSecond = 0
+            if threadID.isEmpty { clearThreadOptionsRefreshCache() }
             start()
         } else {
             pollingActivityGeneration += 1
@@ -424,6 +426,7 @@ final class LiveRateMonitor: ObservableObject {
         totalSnapshot.cacheAdvice = nil
         if active {
             guard monitoringEnabled else { return }
+            if threadID.isEmpty { clearThreadOptionsRefreshCache() }
             configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
             scheduleNextPoll(after: 0.02)
         } else {
@@ -458,9 +461,7 @@ final class LiveRateMonitor: ObservableObject {
         lastLogID = 0
         lastGlobalLogID = 0
         lastLogsSignature = nil
-        lastThreadOptionsSignature = nil
-        lastThreadOptionsRefreshAt = 0
-        lastThreadOptionsFailure = nil
+        clearThreadOptionsRefreshCache()
         lastPollProcessedRows = false
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
@@ -518,6 +519,7 @@ final class LiveRateMonitor: ObservableObject {
         logChangePending = true
         lastFallbackPollAt = 0
         lastRolloutReadAt = 0
+        clearThreadOptionsRefreshCache()
 
         if let oldHome, let newHome {
             threadOptions = threadOptions.map { option in
@@ -590,7 +592,11 @@ final class LiveRateMonitor: ObservableObject {
         return true
     }
 
-    private func resetToLatestThread(activityGeneration: Int) async {
+    private func resetToLatestThread(
+        activityGeneration: Int,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        forceThreadRefresh: Bool = true
+    ) async {
         guard isCurrentPollingActivity(activityGeneration) else { return }
         let resetStartedAt = Date().timeIntervalSince1970
         guard let source = monitoringDataSource() else {
@@ -603,19 +609,46 @@ final class LiveRateMonitor: ObservableObject {
         lastLogsSignature = Self.logStoreSignature(logsDB: cachedLogsDatabasePath)
 
         do {
-            let recentThreadsLoader = recentThreadsLoader
             let stateDB = source.stateDatabase.path
-            let threads = try await Task.detached(priority: .utility) {
-                try recentThreadsLoader(stateDB)
-            }.value
-            guard isCurrentPollingActivity(
-                activityGeneration,
-                sourceGeneration: generation,
-                sourceBindingGeneration: bindingGeneration
-            ) else { return }
-            reconcileThreadOptions(threads)
-            lastThreadOptionsSignature = Self.logStoreSignature(logsDB: stateDB)
-            lastThreadOptionsRefreshAt = Date().timeIntervalSince1970
+            let signature = Self.logStoreSignature(logsDB: stateDB)
+            if forceThreadRefresh || shouldRefreshThreadOptions(
+                current: signature, now: now, discoveringFirstThread: true
+            ) {
+                threadOptionsRefreshRequest &+= 1
+                let request = threadOptionsRefreshRequest
+                let recentThreadsLoader = recentThreadsLoader
+                let threads: [ThreadRow]
+                do {
+                    threads = try await Task.detached(priority: .utility) {
+                        try recentThreadsLoader(stateDB)
+                    }.value
+                } catch {
+                    guard request == threadOptionsRefreshRequest, isCurrentPollingActivity(
+                        activityGeneration,
+                        sourceGeneration: generation,
+                        sourceBindingGeneration: bindingGeneration
+                    ) else { return }
+                    lastThreadOptionsSignature = signature
+                    lastThreadOptionsRefreshAt = now
+                    lastThreadOptionsFailure = (
+                        mainIdentity: signature.database.physicalIdentity,
+                        attemptedAt: now
+                    )
+                    throw error
+                }
+                guard request == threadOptionsRefreshRequest, isCurrentPollingActivity(
+                    activityGeneration,
+                    sourceGeneration: generation,
+                    sourceBindingGeneration: bindingGeneration
+                ) else { return }
+                lastThreadOptionsSignature = signature
+                lastThreadOptionsRefreshAt = now
+                lastThreadOptionsFailure = nil
+                reconcileThreadOptions(threads)
+            } else if lastThreadOptionsFailure != nil {
+                return
+            }
+            // A cached thread list can still retry a failed logs baseline.
             guard let thread = threadOptions.first else {
                 updateSnapshotStatus("未找到活动会话")
                 return
@@ -744,7 +777,10 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
-    private func poll(activityGeneration: Int) async {
+    private func poll(
+        activityGeneration: Int,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) async {
         guard isCurrentPollingActivity(activityGeneration) else { return }
         guard !pollInProgress else {
             return
@@ -760,13 +796,19 @@ final class LiveRateMonitor: ObservableObject {
         let bindingGeneration = sourceBindingGeneration
         configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
         if threadID.isEmpty {
-            await resetToLatestThread(activityGeneration: activityGeneration)
+            // Consume only the signal that preceded this attempt. A watcher
+            // event arriving while discovery awaits must remain pending.
+            logChangePending = false
+            await resetToLatestThread(
+                activityGeneration: activityGeneration,
+                now: now,
+                forceThreadRefresh: false
+            )
             return
         }
 
         do {
             let logsDB = cachedLogsDatabasePath
-            let now = Date().timeIntervalSince1970
             if refreshLogStoreSignature(logsDB: logsDB) {
                 logChangePending = true
             }
@@ -912,6 +954,39 @@ final class LiveRateMonitor: ObservableObject {
         return now - lastRefreshAt >= ttl
     }
 
+    private func clearThreadOptionsRefreshCache() {
+        threadOptionsRefreshRequest &+= 1
+        lastThreadOptionsSignature = nil
+        lastThreadOptionsRefreshAt = 0
+        lastThreadOptionsFailure = nil
+    }
+
+    private func shouldRefreshThreadOptions(
+        current signature: LogStoreSignature,
+        now: TimeInterval,
+        discoveringFirstThread: Bool = false
+    ) -> Bool {
+        if let failure = lastThreadOptionsFailure,
+           failure.mainIdentity == signature.database.physicalIdentity,
+           now - failure.attemptedAt < threadOptionsRefreshTTL {
+            return false
+        }
+        // An empty successful result must discover the first new session as
+        // soon as its state/WAL changes, without querying an unchanged source.
+        if discoveringFirstThread, threadOptions.isEmpty,
+           lastThreadOptionsFailure == nil,
+           let previous = lastThreadOptionsSignature, previous != signature {
+            return true
+        }
+        return Self.shouldRefreshThreads(
+            current: signature,
+            previous: lastThreadOptionsSignature,
+            now: now,
+            lastRefreshAt: lastThreadOptionsRefreshAt,
+            ttl: threadOptionsRefreshTTL
+        )
+    }
+
     private func refreshThreadOptionsIfNeeded(
         source: CodexDataSource?,
         now: TimeInterval,
@@ -923,23 +998,15 @@ final class LiveRateMonitor: ObservableObject {
         guard let source else { return }
         let stateDB = source.stateDatabase.path
         let signature = Self.logStoreSignature(logsDB: stateDB)
-        if let failure = lastThreadOptionsFailure,
-           failure.mainIdentity == signature.database.physicalIdentity,
-           now - failure.attemptedAt < threadOptionsRefreshTTL {
-            return
-        }
-        guard Self.shouldRefreshThreads(
-            current: signature,
-            previous: lastThreadOptionsSignature,
-            now: now,
-            lastRefreshAt: lastThreadOptionsRefreshAt,
-            ttl: threadOptionsRefreshTTL
-        ) else { return }
+        guard shouldRefreshThreadOptions(current: signature, now: now) else { return }
+        threadOptionsRefreshRequest &+= 1
+        let request = threadOptionsRefreshRequest
         do {
             let recentThreadsLoader = recentThreadsLoader
             let threads = try await Task.detached(priority: .utility) {
                 try recentThreadsLoader(stateDB)
             }.value
+            guard request == threadOptionsRefreshRequest else { return }
             if validatePollingActivity {
                 guard isCurrentPollingActivity(
                     activityGeneration,
@@ -954,6 +1021,7 @@ final class LiveRateMonitor: ObservableObject {
             lastThreadOptionsFailure = nil
             reconcileThreadOptions(threads)
         } catch {
+            guard request == threadOptionsRefreshRequest else { return }
             if validatePollingActivity {
                 guard isCurrentPollingActivity(
                     activityGeneration,
@@ -1948,6 +2016,11 @@ extension LiveRateMonitor {
         pollingActive = true
     }
 
+    func testCancelScheduledPoll() {
+        timer?.invalidate()
+        timer = nil
+    }
+
     func testForceStreamRead(logsDB: String) {
         cachedLogsDatabasePath = logsDB
         cachedLogsDirectoryPath = URL(fileURLWithPath: logsDB).deletingLastPathComponent().path
@@ -1955,8 +2028,12 @@ extension LiveRateMonitor {
         lastFallbackPollAt = 0
     }
 
-    func testPollOnce() async {
-        await poll(activityGeneration: pollingActivityGeneration)
+    func testPollOnce(now: TimeInterval = Date().timeIntervalSince1970) async {
+        await poll(activityGeneration: pollingActivityGeneration, now: now)
+    }
+
+    func testResetToLatestThread(now: TimeInterval) async {
+        await resetToLatestThread(activityGeneration: pollingActivityGeneration, now: now)
     }
 
     func testRefreshSnapshots(now: TimeInterval) {

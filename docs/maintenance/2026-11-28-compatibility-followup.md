@@ -50,6 +50,10 @@
 
 新增两项范围策略测试和一项状态栏生命周期测试已在精确 `3256e3f0` hosted CI 中执行通过；这些结果证明行为回归，不直接量化整 App 资源收益。整 App 验收仍使用原固定可见 Dashboard、相同合成来源及采样时长，资源是否减半单独看整 App 配对。
 
+后续源码复核确认空 Codex 源还有两条重复工作路径：`threadID` 为空时每次 poll 都重新调用 recentThreadsLoader，绕过已有的 10 秒线程列表缓存；该分支也没有消费 `logChangePending`，一次目录信号即可在 fast hold 到期后继续维持 0.25 秒轮询。当前候选让自动发现复用缓存，失败按主数据库物理身份退避，成功空结果遇到 state/WAL 变化立即重试；手动 reset、空源恢复启用及物理数据库替换仍立即尝试。pending 在 await 前消费，保留异步读取期间的新信号。发现请求另用顺序标记拒绝被更新请求超越的完成，原 source/activity/binding 守卫保留。这是待云端验证的产品候选，未把后续收益计入上述 3256e3f0 数据。
+
+该候选保留原两项空源状态发布回归，并新增 11 项 fake-clock 回归，覆盖成功/失败 TTL、state/WAL 变化、主库出现或替换、手动强制刷新、日志恢复、异步期间 pending、暂停及换源、同 identity 路径重绑、请求完成顺序与重新启用。CI 必执行清单同时要求这 13 项实际执行。日志恢复用例覆盖自然选中线程后进入 active poll 的路径；pending 用例直接注入信号，没有验证真实 watcher 投递或墙钟调度。独立源码审查已完成；原生编译、测试结果与新的整 App 资源收益仍待精确候选 SHA 的云端验收。
+
 ## 精确 3256e3f0 云端结果（2026-11-28）
 
 以下结果均绑定完整源 SHA `3256e3f051ba35a463de5945d9b4faf08e0f2cc6`，不继承旧 SHA 的结论：
@@ -70,9 +74,13 @@ artifact 原始 ZIP SHA-256 为 `344b2ba41abcf394a89c6b5e400b90019376ca4d9f919ed
 
 两份 stdlib harness 测试共 66 项通过，新增约 2 MiB 类别前缀后的地址采集、零字节超时、截断且返回 0 的 PARTIAL 负控及剩余 deadline 分配；未执行本地产品构建或 App 启动。
 
+更新的 harness `a5571562272a3fc05eaa98909b8bc3aced58d47c` 已推送，独立诊断 `46068336931` 于 2026-11-28 05:08:40 +0800 启动，产品源仍固定为 `3256e3f0`；尚待其真实采集结果。
+
 只读源码复核另确认：`SharedSourceIO.shared.pages` 会长期保留最多 4,194,304 个逻辑字节的原始页，按 65,536 字节目标页读取，`Data` 实际 capacity 尚无直接证据；当前 fixture 的换行缓冲不需要跨块保存。Dashboard 已用 LazyVStack，侧栏详情与状态栏 popover 按需创建，默认 Codex 范围下外部 ranking projection 直接返回空，未发现适用于本份 fixture 的可安全删除大块状态。上述源码路径只提供待验证 owner，不能把 64×80 KiB 的全局 size 桶直接绑定到共享页缓存。
 
 三轮 20k heap 快照均显示，ResponseRecord 字典原为 15,679,488 B，当前 ResponseStorage 对象与对应字典合计 6,593,536 B，减少 9,085,952 B；Double 数组约 2.884 MB 降至 16,016 B。剩余约 15.6–15.8 MB 的 non-object 与约 5.317 MB 的 malloc 组仍无确定的分配归属。后者在不同快照里出现 `__DataStorage._bytes`、`CodexSessionMutationMonitor.stream`、`NetworkAgent.NetworkAgentBackingClass.data._end` 等不同标签，不能把未插桩 heap 的字段推测标签当成具体 owner。vmmap 显示活分配减少和 allocator dirty fragmentation 增加同时存在，heap 字节差额不能替代 physical footprint。
+
+12 份既有 vmmap 的独立分区复算进一步量化了这一区别：20k 的三轮中位 live heap 为 `68.105→55.211 MiB`，malloc-zone dirty 为 `79.2→72.2 MiB`，reported fragmentation 却从 `10.9→17.0 MiB`；候选 DefaultMallocZone 的 fragmentation 约 15.3 MiB。2k 的对应 live heap 为 `48.533→43.509 MiB`，fragmentation 为 `9.299→9.164 MiB`。候选 `snapshot footprint − malloc-zone dirty` 两档均约 28.1 MiB，是当前窗口协议的观测残差，不能称为不可降低的底线。即便乐观地把全部 reported fragmentation 清零，按合格 role medians 距离半基线 footprint 仍约差 29 MiB；这些脏页并非已证实可回收量。summary vmmap 的 resident 也不等于采样 RSS，不能把 clean framework mapping 总量当成 App 独占的可削减预算。
 
 新增独立 `allocation_diagnostic` 云端入口，只构建指定 candidate，保留原 GUI/fixture/ledger 门槛，以同一 20k 合成输入运行一次。仅 App 子进程出生时启用 `MallocStackLogging=1`，辅助命令保持清洁环境；测量结束后查询至少 64 KiB 的有限地址，最多四个 malloc_history，采用两大块及 80/64 KiB 桶的抽样。工具采用上述有界预算，保留完整预算内的原始输出、参数、时间、hash、截断和不可用状态。地址可能在选择后释放或复用，栈也不等于保留关系。新结果显式标记 `performanceComparable=false`、`performanceVerdict=NOT_EVALUATED`；配对汇总拒收插桩结果，所有资源观察均不能用于减半验收。构建 artifact 同时保存 executable 与 Info.plist 字节，便于独立重算 hash。取得有效栈前，不据静态容量猜测删除产品状态。
 

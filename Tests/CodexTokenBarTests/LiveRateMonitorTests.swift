@@ -307,18 +307,17 @@ final class LiveRateMonitorTests: XCTestCase {
 
     @MainActor
     func testMissingStatePollPublishesRepeatedFailureOnlyOnce() async throws {
-        let source = try makeCodexDataSource(named: "missing-state-publication")
-        let escapedHome = source.codexHome.path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        try "sqlite_home = \"\(escapedHome)\"\n".write(
-            to: source.codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8
-        )
+        let source = try makeDiscoveryDataSource(named: "missing-state-publication")
         XCTAssertEqual(source.stateDatabase, source.codexHome.appendingPathComponent("state_5.sqlite"))
-        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false)
-        try? await Task.sleep(nanoseconds: 20_000_000)
-        monitor.setDataSource(source)
-        monitor.testActivatePollingWithoutScheduling()
+        let loader = CountingRecentThreadsLoader { path in
+            try LiveRateMonitor.recentThreads(stateDB: path)
+        }
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
         var publications: [LiveRateSnapshot] = []
         let observation = monitor.$snapshot.dropFirst().sink { publications.append($0) }
         defer {
@@ -326,14 +325,18 @@ final class LiveRateMonitorTests: XCTestCase {
             monitor.setPollingActive(false)
         }
 
-        await monitor.testPollOnce()
+        await monitor.testPollOnce(now: 100)
         let unavailable = monitor.snapshot
         XCTAssertTrue(unavailable.status.hasPrefix("实时测速不可用："))
         XCTAssertEqual(publications.count, 1)
 
-        await monitor.testPollOnce()
-        await monitor.testPollOnce()
+        await monitor.testPollOnce(now: 100.25)
+        await monitor.testPollOnce(now: 109.99)
+        XCTAssertEqual(loader.loadCount, 1, "missing state discovery must back off within the TTL")
 
+        await monitor.testPollOnce(now: 110)
+
+        XCTAssertEqual(loader.loadCount, 2, "unchanged failures must still retry when the TTL expires")
         XCTAssertEqual(publications, [unavailable])
         XCTAssertEqual(monitor.snapshot, unavailable)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.stateDatabase.path))
@@ -341,7 +344,7 @@ final class LiveRateMonitorTests: XCTestCase {
 
     @MainActor
     func testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery() async throws {
-        let source = try makeCodexDataSource(named: "thread-publication-recovery")
+        let source = try makeDiscoveryDataSource(named: "thread-publication-recovery")
         let firstError = NSError(domain: "LiveRatePublicationTest", code: 1,
                                  userInfo: [NSLocalizedDescriptionKey: "state unavailable"])
         let nextError = NSError(domain: "LiveRatePublicationTest", code: 2,
@@ -356,9 +359,7 @@ final class LiveRateMonitorTests: XCTestCase {
             monitoringEnabled: false,
             recentThreadsLoader: { path in try loader.load(path: path) }
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
-        monitor.setDataSource(source)
-        monitor.testActivatePollingWithoutScheduling()
+        await prepareDiscoveryPolling(monitor, source: source)
         let totalBefore = monitor.totalSnapshot
         var statuses: [String] = []
         let observation = monitor.$snapshot.dropFirst().sink { statuses.append($0.status) }
@@ -367,8 +368,12 @@ final class LiveRateMonitorTests: XCTestCase {
             monitor.setPollingActive(false)
         }
 
-        for _ in 0..<7 {
-            await monitor.testPollOnce()
+        for attempt in 0..<7 {
+            let now = 100 + TimeInterval(attempt) * 10
+            await monitor.testPollOnce(now: now)
+            XCTAssertEqual(loader.loadCount, attempt + 1)
+            await monitor.testPollOnce(now: now + 0.25)
+            XCTAssertEqual(loader.loadCount, attempt + 1, "an immediate poll must reuse the discovery attempt")
         }
 
         XCTAssertEqual(loader.loadCount, 7, "unchanged status must not skip discovery retries")
@@ -381,6 +386,413 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.totalSnapshot, totalBefore)
         XCTAssertTrue(monitor.threadOptions.isEmpty)
         XCTAssertEqual(monitor.selectedThreadID, "")
+    }
+
+    @MainActor
+    func testEmptyThreadPollFailureBackoffIgnoresWalChangesUntilTTL() async throws {
+        let source = try makeDiscoveryDataSource(named: "empty-failure-backoff")
+        try Data("state".utf8).write(to: source.stateDatabase)
+        let failure = discoveryError("state unavailable")
+        let loader = SequencedRecentThreadsLoader(results: [.failure(failure), .success([])])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer { monitor.setPollingActive(false) }
+
+        await monitor.testPollOnce(now: 100)
+        let unavailable = monitor.snapshot
+        XCTAssertEqual(unavailable.status, "实时测速不可用：\(failure.localizedDescription)")
+
+        let walURL = URL(fileURLWithPath: source.stateDatabase.path + "-wal")
+        try Data("wal-1".utf8).write(to: walURL)
+        await monitor.testPollOnce(now: 100.25)
+        try Data("wal-2-is-larger".utf8).write(to: walURL)
+        await monitor.testPollOnce(now: 109.99)
+        XCTAssertEqual(loader.loadCount, 1, "WAL growth must not bypass a failed main-file attempt")
+        XCTAssertEqual(monitor.snapshot, unavailable)
+
+        await monitor.testPollOnce(now: 110)
+        XCTAssertEqual(loader.loadCount, 2)
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testEmptyThreadPollCachesSuccessfulEmptyUntilTTLAndDiscoversStateChangesImmediately() async throws {
+        let source = try makeDiscoveryDataSource(named: "empty-success-cache")
+        try Data("state".utf8).write(to: source.stateDatabase)
+        _ = try createLogsDatabase(at: source.logsDatabase)
+        let row = LiveRateMonitor.ThreadRow(id: "first-thread", title: "First", updatedAtMS: 1, rolloutPath: "")
+        let loader = SequencedRecentThreadsLoader(results: [
+            .success([]), .success([]), .success([]), .success([row])
+        ])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer { monitor.setPollingActive(false) }
+
+        await monitor.testPollOnce(now: 100)
+        await monitor.testPollOnce(now: 100.25)
+        await monitor.testPollOnce(now: 109.99)
+        XCTAssertEqual(loader.loadCount, 1, "an unchanged empty result must retain the discovery TTL")
+
+        await monitor.testPollOnce(now: 110)
+        XCTAssertEqual(loader.loadCount, 2, "an unchanged empty result must still retry at the TTL")
+
+        let beforeMutation = LiveRateMonitor.logStoreSignature(logsDB: source.stateDatabase.path)
+        try Data("state-with-more-content".utf8).write(to: source.stateDatabase)
+        let afterMutation = LiveRateMonitor.logStoreSignature(logsDB: source.stateDatabase.path)
+        XCTAssertEqual(afterMutation.database.physicalIdentity, beforeMutation.database.physicalIdentity)
+        XCTAssertNotEqual(afterMutation, beforeMutation)
+        await monitor.testPollOnce(now: 110.1)
+        XCTAssertEqual(loader.loadCount, 3, "main-file content changes must invalidate a successful empty result")
+
+        try Data("new-thread-wal".utf8).write(to: URL(fileURLWithPath: source.stateDatabase.path + "-wal"))
+        await monitor.testPollOnce(now: 110.2)
+        XCTAssertEqual(loader.loadCount, 4, "a WAL change must discover the first thread before the TTL")
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["first-thread"])
+        XCTAssertEqual(monitor.selectedThreadID, "first-thread")
+        XCTAssertEqual(monitor.snapshot.status, "监听选中 thread")
+    }
+
+    @MainActor
+    func testEmptyThreadPollRetriesImmediatelyWhenStateIsCreatedOrPhysicallyReplaced() async throws {
+        for initiallyMissing in [true, false] {
+            let source = try makeDiscoveryDataSource(named: initiallyMissing ? "state-created" : "state-replaced")
+            if !initiallyMissing {
+                try Data("not a SQLite database".utf8).write(to: source.stateDatabase)
+            }
+            let loader = CountingRecentThreadsLoader { path in
+                try LiveRateMonitor.recentThreads(stateDB: path)
+            }
+            let monitor = LiveRateMonitor(
+                preciseTokenCountingEnabled: false,
+                monitoringEnabled: false,
+                recentThreadsLoader: { path in try loader.load(path: path) }
+            )
+            await prepareDiscoveryPolling(monitor, source: source)
+            defer { monitor.setPollingActive(false) }
+
+            await monitor.testPollOnce(now: 100)
+            XCTAssertEqual(loader.loadCount, 1)
+            XCTAssertTrue(monitor.snapshot.status.hasPrefix("实时测速不可用："))
+            await monitor.testPollOnce(now: 100.1)
+            XCTAssertEqual(loader.loadCount, 1)
+
+            let previous = LiveRateMonitor.logStoreSignature(logsDB: source.stateDatabase.path)
+            let replacement = source.codexHome.appendingPathComponent("replacement.sqlite")
+            try createEmptyThreadDatabase(at: replacement)
+            if !initiallyMissing {
+                try FileManager.default.removeItem(at: source.stateDatabase)
+            }
+            try FileManager.default.moveItem(at: replacement, to: source.stateDatabase)
+            let current = LiveRateMonitor.logStoreSignature(logsDB: source.stateDatabase.path)
+            XCTAssertTrue(current.isPhysicalDatabaseReplacement(comparedTo: previous))
+
+            await monitor.testPollOnce(now: 100.25)
+            XCTAssertEqual(loader.loadCount, 2, "a new main-file identity must bypass the failed discovery TTL")
+            XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+        }
+    }
+
+    @MainActor
+    func testManualResetForcesEmptyDiscoveryAtTheSameClock() async throws {
+        let source = try makeDiscoveryDataSource(named: "forced-empty-reset")
+        let loader = SequencedRecentThreadsLoader(results: [
+            .failure(discoveryError("unavailable")), .success([]), .success([])
+        ])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer { monitor.setPollingActive(false) }
+
+        await monitor.testPollOnce(now: 100)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 1)
+
+        await monitor.testResetToLatestThread(now: 100)
+        XCTAssertEqual(loader.loadCount, 2, "manual reset must bypass a cached failure")
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 2)
+
+        await monitor.testResetToLatestThread(now: 100)
+        XCTAssertEqual(loader.loadCount, 3, "manual reset must also bypass a cached successful empty result")
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testCachedNonemptyThreadOptionsStillRecoverAfterLogsDatabaseAppears() async throws {
+        let source = try makeDiscoveryDataSource(named: "cached-threads-log-recovery")
+        let loader = CountingRecentThreadsLoader(rows: [
+            LiveRateMonitor.ThreadRow(id: "thread-recovery", title: "Recovery", updatedAtMS: 1, rolloutPath: "")
+        ])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer { monitor.setPollingActive(false) }
+
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 1)
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-recovery"])
+        XCTAssertTrue(monitor.snapshot.status.hasPrefix("实时测速不可用："))
+
+        await monitor.testPollOnce(now: 100.25)
+        XCTAssertEqual(loader.loadCount, 1, "a log-read failure must not invalidate a successful thread list")
+
+        let driver = try createLogsDatabase(at: source.logsDatabase)
+        try insertLog(
+            driver: driver,
+            id: 7,
+            threadID: "thread-recovery",
+            target: "codex_api::sse::responses",
+            body: #"SSE event: {"type":"response.output_text.delta","delta":"recovered","item_id":"recovery-item","sequence_number":1}"#
+        )
+        monitor.logChangePending = true
+        await monitor.testPollOnce(now: 100.5)
+
+        XCTAssertEqual(loader.loadCount, 1)
+        XCTAssertEqual(monitor.testLastGlobalLogID, 7)
+        XCTAssertGreaterThan(monitor.totalSnapshot.breakdown.visibleText, 0)
+        XCTAssertFalse(monitor.snapshot.status.contains("失败"))
+        XCTAssertFalse(monitor.snapshot.status.contains("不可用"))
+    }
+
+    @MainActor
+    func testEmptyThreadPollConsumesExistingSignalButPreservesSignalArrivingDuringDiscovery() async throws {
+        let source = try makeDiscoveryDataSource(named: "empty-pending-signal")
+        let started = expectation(description: "empty discovery suspended")
+        let loader = SuspendedRecentThreadsLoader(results: [.success([])], started: started)
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer {
+            loader.releaseSuspendedLoad()
+            monitor.setPollingActive(false)
+        }
+        monitor.logChangePending = true
+
+        let poll = Task { @MainActor in await monitor.testPollOnce(now: 100) }
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertFalse(monitor.logChangePending, "the signal preceding discovery must be consumed before awaiting")
+        monitor.logChangePending = true
+        loader.releaseSuspendedLoad()
+        await poll.value
+        XCTAssertFalse(loader.didTimeOut, "suspended discovery must finish with its scripted result, not a timeout")
+
+        XCTAssertTrue(monitor.logChangePending, "a signal arriving during discovery must survive its completion")
+        await monitor.testPollOnce(now: 100.25)
+        XCTAssertFalse(monitor.logChangePending)
+        XCTAssertEqual(loader.loadCount, 1, "a pending log signal must not discard the empty-result cache")
+    }
+
+    @MainActor
+    func testPausedEmptyDiscoveryCompletionCannotPublishOrCacheFailure() async throws {
+        let source = try makeDiscoveryDataSource(named: "paused-empty-discovery")
+        let started = expectation(description: "old activity discovery suspended")
+        let loader = SuspendedRecentThreadsLoader(
+            results: [.failure(discoveryError("late paused failure")), .success([])],
+            started: started
+        )
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer {
+            loader.releaseSuspendedLoad()
+            monitor.setPollingActive(false)
+        }
+
+        let oldPoll = Task { @MainActor in await monitor.testPollOnce(now: 100) }
+        await fulfillment(of: [started], timeout: 3)
+        monitor.setPollingActive(false)
+        let pausedSnapshot = monitor.snapshot
+        loader.releaseSuspendedLoad()
+        await oldPoll.value
+        XCTAssertFalse(loader.didTimeOut, "paused discovery must finish with its scripted result, not a timeout")
+        XCTAssertEqual(monitor.snapshot, pausedSnapshot)
+
+        // Bypass the public resume cache reset to expose any cache written by
+        // the rejected old completion itself.
+        monitor.testActivatePollingWithoutScheduling()
+        suppressDiscoveryScheduling(monitor, source: source)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 2, "a paused completion must not install a failure backoff")
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testChangedSourceRejectsSuspendedEmptyDiscoverySuccessAndItsCache() async throws {
+        let sourceA = try makeDiscoveryDataSource(named: "empty-source-a")
+        let sourceB = try makeDiscoveryDataSource(named: "empty-source-b")
+        let started = expectation(description: "source A discovery suspended")
+        let staleRow = LiveRateMonitor.ThreadRow(id: "stale-thread", title: "Stale", updatedAtMS: 1, rolloutPath: "")
+        let loader = SuspendedRecentThreadsLoader(results: [.success([staleRow]), .success([])], started: started)
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: sourceA)
+        defer {
+            loader.releaseSuspendedLoad()
+            monitor.setPollingActive(false)
+        }
+
+        let oldPoll = Task { @MainActor in await monitor.testPollOnce(now: 100) }
+        await fulfillment(of: [started], timeout: 3)
+        monitor.setDataSource(sourceB)
+        suppressDiscoveryScheduling(monitor, source: sourceB)
+        let sourceBSnapshot = monitor.snapshot
+        loader.releaseSuspendedLoad()
+        await oldPoll.value
+        XCTAssertFalse(loader.didTimeOut, "source A discovery must finish with its scripted success, not a timeout")
+
+        XCTAssertEqual(monitor.snapshot, sourceBSnapshot)
+        XCTAssertTrue(monitor.threadOptions.isEmpty)
+        XCTAssertEqual(monitor.selectedThreadID, "")
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 2, "source A must not seed source B's successful discovery cache")
+        XCTAssertEqual(loader.paths, [sourceA.stateDatabase.path, sourceB.stateDatabase.path])
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testSameIdentityRebindClearsDiscoveryCacheAndRejectsSuspendedOldPathFailure() async throws {
+        let sourceAtOldPath = try makeDiscoveryDataSource(named: "empty-old-binding")
+        try Data("state".utf8).write(to: sourceAtOldPath.stateDatabase)
+        let oldStatePath = sourceAtOldPath.stateDatabase.path
+        let started = expectation(description: "old binding forced discovery suspended")
+        let failure = discoveryError("old path unavailable")
+        let loader = SuspendedRecentThreadsLoader(
+            results: [.failure(failure), .failure(failure), .success([])],
+            suspendedLoadIndex: 1,
+            started: started
+        )
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: sourceAtOldPath)
+        defer {
+            loader.releaseSuspendedLoad()
+            monitor.setPollingActive(false)
+        }
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 1)
+        let generation = monitor.testSourceGeneration
+        let binding = monitor.testSourceBindingGeneration
+        let oldIdentity = LiveRateMonitor.logStoreSignature(logsDB: oldStatePath).database.physicalIdentity
+
+        let oldReset = Task { @MainActor in await monitor.testResetToLatestThread(now: 100) }
+        await fulfillment(of: [started], timeout: 3)
+        let newHome = sourceAtOldPath.codexHome.appendingPathExtension("moved")
+        try FileManager.default.moveItem(at: sourceAtOldPath.codexHome, to: newHome)
+        temporaryDirectories.append(newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        try pinDiscoverySQLiteHome(sourceAtNewPath)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+        XCTAssertEqual(
+            LiveRateMonitor.logStoreSignature(logsDB: sourceAtNewPath.stateDatabase.path).database.physicalIdentity,
+            oldIdentity
+        )
+        monitor.setDataSource(sourceAtNewPath)
+        suppressDiscoveryScheduling(monitor, source: sourceAtNewPath)
+        let reboundSnapshot = monitor.snapshot
+        loader.releaseSuspendedLoad()
+        await oldReset.value
+        XCTAssertFalse(loader.didTimeOut, "old-path discovery must finish with its scripted result, not a timeout")
+
+        XCTAssertEqual(monitor.testSourceGeneration, generation)
+        XCTAssertEqual(monitor.testSourceBindingGeneration, binding + 1)
+        XCTAssertEqual(monitor.snapshot, reboundSnapshot)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 3, "same-identity rebinding must clear both old and in-flight failure backoff")
+        XCTAssertEqual(loader.paths, [oldStatePath, oldStatePath, sourceAtNewPath.stateDatabase.path])
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testOlderAutomaticDiscoveryFailureCannotOverwriteNewerManualResetCache() async throws {
+        let source = try makeDiscoveryDataSource(named: "empty-discovery-request-order")
+        let started = expectation(description: "older automatic discovery suspended")
+        let loader = SuspendedRecentThreadsLoader(
+            results: [.failure(discoveryError("late automatic failure")), .success([]), .success([])],
+            started: started
+        )
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer {
+            loader.releaseSuspendedLoad()
+            monitor.setPollingActive(false)
+        }
+
+        let oldPoll = Task { @MainActor in await monitor.testPollOnce(now: 100) }
+        await fulfillment(of: [started], timeout: 3)
+        await monitor.testResetToLatestThread(now: 100)
+        XCTAssertEqual(loader.loadCount, 2)
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+        let resetSnapshot = monitor.snapshot
+        loader.releaseSuspendedLoad()
+        await oldPoll.value
+        XCTAssertFalse(loader.didTimeOut, "older discovery must finish with its scripted failure, not a timeout")
+        XCTAssertEqual(monitor.snapshot, resetSnapshot, "an older failure must not replace the manual reset's status")
+
+        try Data("new-thread-wal".utf8).write(to: URL(fileURLWithPath: source.stateDatabase.path + "-wal"))
+        await monitor.testPollOnce(now: 100.1)
+        XCTAssertEqual(loader.loadCount, 3, "the older failure must not reinstate backoff over the newer empty success")
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+    }
+
+    @MainActor
+    func testEmptyThreadDiscoveryRetriesImmediatelyAfterResumeAndEnable() async throws {
+        let source = try makeDiscoveryDataSource(named: "empty-resume-discovery")
+        let failure = discoveryError("state unavailable")
+        let loader = SequencedRecentThreadsLoader(results: [.failure(failure), .failure(failure), .success([])])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        await prepareDiscoveryPolling(monitor, source: source)
+        defer { monitor.setMonitoringEnabled(false) }
+
+        await monitor.testPollOnce(now: 100)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 1)
+
+        monitor.setPollingActive(false)
+        monitor.setPollingActive(true)
+        suppressDiscoveryScheduling(monitor, source: source)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 2, "resume must retry empty discovery without waiting out the prior TTL")
+
+        monitor.setMonitoringEnabled(false)
+        monitor.setMonitoringEnabled(true)
+        suppressDiscoveryScheduling(monitor, source: source)
+        await monitor.testPollOnce(now: 100)
+        XCTAssertEqual(loader.loadCount, 3, "enabling monitoring must retry empty discovery at the same clock")
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
     }
 
     @MainActor
@@ -2426,6 +2838,76 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(reads[0].events.map(\.text), ["new"])
     }
 
+    private func discoveryError(_ message: String) -> NSError {
+        NSError(domain: "LiveRateDiscoveryTest", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private func makeDiscoveryDataSource(named name: String) throws -> CodexDataSource {
+        let source = try makeCodexDataSource(named: name)
+        try pinDiscoverySQLiteHome(source)
+        return source
+    }
+
+    private func pinDiscoverySQLiteHome(_ source: CodexDataSource) throws {
+        let escapedHome = source.codexHome.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        try "sqlite_home = \"\(escapedHome)\"\n".write(
+            to: source.codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8
+        )
+    }
+
+    @MainActor
+    private func prepareDiscoveryPolling(_ monitor: LiveRateMonitor, source: CodexDataSource) async {
+        let initialized = expectation(description: "disabled monitor initialization completed")
+        let observation = monitor.$snapshot
+            .filter { $0.status == "实时速率已关闭" }
+            .prefix(1)
+            .sink { _ in initialized.fulfill() }
+        await fulfillment(of: [initialized], timeout: 3)
+        observation.cancel()
+        monitor.setDataSource(source)
+        monitor.testActivatePollingWithoutScheduling()
+        suppressDiscoveryScheduling(monitor, source: source)
+    }
+
+    @MainActor
+    private func suppressDiscoveryScheduling(_ monitor: LiveRateMonitor, source: CodexDataSource) {
+        monitor.testCancelScheduledPoll()
+        monitor.logsDirectorySource?.cancel()
+        monitor.logsDirectorySource = nil
+        // These tests inject the watcher signal directly. Keeping the bound
+        // path prevents poll() from installing a real watcher and scheduling
+        // wall-clock polls while the fake-clock attempt is suspended.
+        monitor.watchedLogsDirectory = source.codexHome.path
+    }
+
+    private func createEmptyThreadDatabase(at url: URL) throws {
+        try SQLiteDatabaseDriver(url: url).execute("""
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            rollout_path TEXT,
+            updated_at INTEGER
+        );
+        """)
+    }
+
+    private func createLogsDatabase(at url: URL) throws -> SQLiteDatabaseDriver {
+        let driver = SQLiteDatabaseDriver(url: url)
+        try driver.execute("""
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY,
+            thread_id TEXT,
+            ts INTEGER,
+            ts_nanos INTEGER,
+            target TEXT,
+            feedback_log_body TEXT
+        );
+        """)
+        return driver
+    }
+
     private func makeDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorTests-\(UUID().uuidString)", isDirectory: true)
@@ -2756,21 +3238,100 @@ private final class SequencedRecentThreadsLoader: @unchecked Sendable {
     }
 }
 
-private final class CountingRecentThreadsLoader: @unchecked Sendable {
+private final class SuspendedRecentThreadsLoader: @unchecked Sendable {
     private let lock = NSLock()
-    private let rows: [LiveRateMonitor.ThreadRow]
-    private let failure: Error?
-    private(set) var loadCount = 0
+    private let results: [Result<[LiveRateMonitor.ThreadRow], Error>]
+    private let suspendedLoadIndex: Int
+    private let started: XCTestExpectation
+    private let release = DispatchSemaphore(value: 0)
+    private var recordedPaths: [String] = []
+    private var timedOut = false
 
-    init(rows: [LiveRateMonitor.ThreadRow], failure: Error? = nil) {
-        self.rows = rows
-        self.failure = failure
+    init(
+        results: [Result<[LiveRateMonitor.ThreadRow], Error>],
+        suspendedLoadIndex: Int = 0,
+        started: XCTestExpectation
+    ) {
+        precondition(!results.isEmpty)
+        self.results = results
+        self.suspendedLoadIndex = suspendedLoadIndex
+        self.started = started
+    }
+
+    var loadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedPaths.count
+    }
+
+    var paths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedPaths
+    }
+
+    var didTimeOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return timedOut
+    }
+
+    func releaseSuspendedLoad() {
+        release.signal()
     }
 
     func load(path: String) throws -> [LiveRateMonitor.ThreadRow] {
         lock.lock()
-        loadCount += 1
+        let index = recordedPaths.count
+        recordedPaths.append(path)
+        let result = results[min(index, results.count - 1)]
         lock.unlock()
+        if index == suspendedLoadIndex {
+            started.fulfill()
+            guard release.wait(timeout: .now() + 5) == .success else {
+                lock.lock()
+                timedOut = true
+                lock.unlock()
+                throw NSError(
+                    domain: "LiveRateDiscoveryTest", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Timed out waiting to release discovery"]
+                )
+            }
+        }
+        return try result.get()
+    }
+}
+
+private final class CountingRecentThreadsLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let rows: [LiveRateMonitor.ThreadRow]
+    private let failure: Error?
+    private let loadRows: (@Sendable (String) throws -> [LiveRateMonitor.ThreadRow])?
+    private var count = 0
+
+    init(rows: [LiveRateMonitor.ThreadRow], failure: Error? = nil) {
+        self.rows = rows
+        self.failure = failure
+        loadRows = nil
+    }
+
+    init(loadRows: @escaping @Sendable (String) throws -> [LiveRateMonitor.ThreadRow]) {
+        rows = []
+        failure = nil
+        self.loadRows = loadRows
+    }
+
+    var loadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func load(path: String) throws -> [LiveRateMonitor.ThreadRow] {
+        lock.lock()
+        count += 1
+        lock.unlock()
+        if let loadRows { return try loadRows(path) }
         if let failure { throw failure }
         return rows
     }
