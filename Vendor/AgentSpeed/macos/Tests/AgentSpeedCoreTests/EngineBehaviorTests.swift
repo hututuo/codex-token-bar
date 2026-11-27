@@ -238,7 +238,7 @@ struct EngineBehaviorTests {
         var engine = SpeedEngine()
         let now: Int64 = 0
         let historyBoundary: Int64 = -299_000
-        let liveBoundary: Int64 = -60_000
+        let liveBoundary = -SpeedEngine.liveWindowMs
         let samples: [(String, Int64, Int)] = [
             ("history-before", historyBoundary - 1, 10),
             ("history-equal", historyBoundary, 20),
@@ -256,7 +256,8 @@ struct EngineBehaviorTests {
         let result = engine.advance(nowMs: now, todayStartMs: -1_000_000, emitsEvents: false)
 
         #expect(abs((result.history.first?.measured.output ?? 0) - 0.03) < 1e-9)
-        #expect(abs(result.live.output - (130.0 * 0.001 / 60.0)) < 1e-9)
+        let liveWindowSeconds = Double(SpeedEngine.liveWindowMs) / 1000
+        #expect(abs(result.live.output - (130.0 * 0.001 / liveWindowSeconds)) < 1e-9)
     }
 
     @Test func historyEstimatesStartAfterTheAgentsLatestResponse() {
