@@ -154,6 +154,12 @@
 - 665 heap的四个704KiB分配与两个monitor/session、Double总量高度一致，结合fixture支持空Codex与有数据Claude各一账本的解释；没有地址级所有权图。单个空账本可避免1,440,000B元素载荷，分配类别推算约1,441,792B；这是上界算术，**不是实测footprint节省，更不是减半**。
 - 新增7项原生测试，检查零分配、首个分配、精确totals/average/peak及时间、替换/删除与fresh ledger对照、subset cache扫描、Array copy和25小时/非整秒边界。全部加入正常CI的108项required；独立源码与算术审查、14项execution-gate、16项workflow Python及vendor/diff检查通过，尚待云端原生执行。
 
+### 空去重表与价格别名索引：`03ee0bac`（待新 SHA 云端验收）
+
+- `Deduper` 的精确键 `owners` 表从初始化时预留改为第一次 exact claim 时预留；`contains`、`isOwnedByOtherFile`、hashed history 模式和原有 FIFO/容量语义不变。新增 7 个 XCTest 回归覆盖空实例、首次分配、65,536 边界、容量夹紧、值复制隔离与 hashed 分离。
+- Swift 多客户端账本的 exact bundled price alias 表由复制完整 `PriceModel` 改为保存不可变 bundled catalog 的模型索引；同 ID 重复 alias 保留首个索引，跨 ID 冲突继续 `ambiguous`，计费结果和原始账本字段不变。新增全量 alias 独立分组及冲突/重复 ID 测试。
+- 这两项是局部存储优化，最大静态分配估计仍只有 Deduper 空表约 180,224B 与价格字典原分配上限约 180,224B，不能替代整 App 减半验收。`Vendor/AgentSpeed/UPSTREAM.json` 已记录精确 patch/addition hashes；编译、原生测试及新整 App 测量必须在后续 SHA 通过 cloud workflow 后才可记为接受。
+
 ### 共享每日上限测试午夜fixture：`f59bc14f`
 
 - f2的唯一失败case实际在2026-11-27 00:00:43 UTC执行，测试传入当天00:00的dayStart，却将已占用请求时间设为`now-60`，即前一天23:59:43。生产按`claimedAt >= dayStart`计入当日预算，因此允许新一天请求符合现有合同；并非已证明的生产每日上限故障。
@@ -276,6 +282,7 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 - Claude 仅支持实际落地的本地 Code/Agent transcript；普通 cloud-only 对话不可读。Claude 仍明确排除外部 speed reporting。
 - Claude 历史Swift/Rust的JSONL完整record含LF上限在267aa5e8源码扩展至16MiB，原4MiB normal batch保留；267完整CI的两端边界测试已实际通过。超过16MiB会保留断点并阻塞后继行，不能把它描述为与live的32MiB内容上限一致。macOS live读取块4MiB；Windows普通文件live读取块1MiB、注入backend的请求上限4MiB。历史文件最初64KiB内没有完整entrypoint-bearing行时，还存在Desktop分类不完整的独立边界。新源码及合成测试不代表解决16–32MiB或Desktop分类上限，原视频漏计的已确认根因仍为隔离账号目录未覆盖。
 - 已用源码和纯Python合成反例进一步分清Desktop分类缺口：无短header且首条含LF恰为65,537B时回退CLI；显式Desktop usage被拒绝而漏计，后继省略entrypoint的usage才可能误归CLI。现有Swift大记录fixture固定CLI显式path、Rust Desktop fixture先写短header，不能证明此反例已兼容。修复还需处理Swift总64MiB分类预算的公平进度、线性delimiter扫描、旧EOF checkpoint契约迁移，以及events无source provenance时旧CLI错账的保全；直接扩常量或replay可能造成漏扫/跨namespace双计。调查文件为忽略目录 `current-resource-review/claude-classifier-boundary-investigation.md`；没有读取真实transcript或声明受影响规模，尚未修改生产分类行为。
+- 现有 checkpoint 只有 source 最终游标，revision 只有规范化 payload 和捕获时间，无法证明旧 CLI 隐式条目的文件或字节范围。后续分类修复应先保全旧账并把冲突重放放入 pending；若要正式激活可逆跨 namespace 归属，需要带 source generation/range 的 observations、append-only attribution action、统一 effective-events CTE、action generation cache stamp，并将改变数字的读写格式升级为 schema 3 使旧 reader fail-closed。候选设计见忽略目录 `current-resource-review/claude-attribution-provenance-options.md`，当前未改 schema 或历史数据。
 - quota 来自各客户端自己的本地观测与 freshness 规则，不因路径同属一个账号目录就获得当前登录账号绑定证明。
 - schema 2 接受必需字段集合的兼容扩展；显式列名解决 nullable 追加列写入。新增 NOT NULL/无默认值列、任意新约束及未知 JSON 键的重编码无损性不在此保证内。未来影响写入或用量语义的格式应增加 schema version，使旧程序拒绝，而不能仅追加字段后假设旧程序能无损写回。
 - Swift/Rust checkpoint key 和部分 continuation 表示不同，切换实现可能重扫；不能承诺直接沿用另一实现的 cursor。事件与 checkpoint 仍同事务提交，重扫依赖稳定事件身份去重。
