@@ -762,7 +762,7 @@
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
       "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh. Also assert live-window cache trimming preserves old-today totals and value snapshots.",
-      "sha256": "54eb1676ba3f98d6ef8727853d383d5dcc7569ec3e1c05629b674d2013587b2d"
+      "sha256": "797852400392c61ca83ccee7534caa3f13c4431586c118acd5b6d2642327f447"
     },
     "macos/Tests/AgentSpeedCoreTests/HistoryCostTests.swift": {
       "reason": "Verify initial pricing and late repricing detach engine costs from immutable parser revisions and unpriced engines.",
